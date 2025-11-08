@@ -1,11 +1,3 @@
-//
-//  Mapper71.swift
-//  nesforgood
-//
-//  Created by kevin on 2025-10-30.
-//
-
-
 final class Mapper71: Mapper {
     let prgROM: [UInt8]
     let chr: CHRMemory

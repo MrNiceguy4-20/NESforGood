@@ -1,21 +1,18 @@
 import Foundation
 
-// MARK: - Errors
 enum CartridgeError: Error {
     case invalidROM
     case unsupportedMapper(Int)
 }
 
-// MARK: - Mirroring
 enum Mirroring {
     case horizontal
     case vertical
     case fourScreen
-    case singleScreenLow   // One-screen A ($2000 mirrored)
-    case singleScreenHigh  // One-screen B ($2400 mirrored)
+    case singleScreenLow
+    case singleScreenHigh
 }
 
-// MARK: - Cartridge
 final class Cartridge {
     let prgROM: [UInt8]
     let mirroring: Mirroring
@@ -113,7 +110,6 @@ final class Cartridge {
     }
 }
 
-// MARK: - Mapper Protocol
 protocol Mapper: AnyObject {
     func cpuRead(address: UInt16) -> UInt8
     func cpuWrite(address: UInt16, value: UInt8)

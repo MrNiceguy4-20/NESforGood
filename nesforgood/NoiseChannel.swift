@@ -1,26 +1,14 @@
-//
-//  NoiseChannel.swift
-//  nesforgood
-//
-//  Created by kevin on 2025-10-30.
-//
-
-
 class NoiseChannel {
     weak var apu: APU?
-    
     var enabled: Bool = false
     var lengthHalt: Bool = false
     var constantVolume: Bool = false
     var volume: UInt8 = 0
-    
     var envelopeStart: Bool = false
     var envelopeDivider: UInt8 = 0
     var decayLevel: UInt8 = 0
-    
     var mode: Bool = false
     var periodIndex: UInt8 = 0
-    
     var lengthCounter: UInt8 = 0
     var timer: UInt16 = 0
     var shiftRegister: UInt16 = 1

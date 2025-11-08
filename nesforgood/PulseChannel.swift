@@ -1,11 +1,3 @@
-//
-//  PulseChannel.swift
-//  nesforgood
-//
-//  Created by kevin on 2025-10-30.
-//
-
-
 class PulseChannel {
     weak var apu: APU?
     let channel: Int
@@ -114,7 +106,7 @@ class PulseChannel {
         var change = shifted
         if sweepNegate {
             change = -shifted
-            if channel == 1 { change &-= 1 } // pulse1 extra subtract
+            if channel == 1 { change &-= 1 }
         }
         var targetInt = Int(period) &+ change
         if targetInt < 0 { targetInt = 0 }

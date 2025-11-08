@@ -1,11 +1,3 @@
-//
-//  GNROMMapper.swift
-//  nesforgood
-//
-//  Created by kevin on 2025-10-30.
-//
-
-
 final class GNROMMapper: Mapper {
     let prgROM: [UInt8]
     let chr: CHRMemory

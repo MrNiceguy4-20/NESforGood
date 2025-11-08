@@ -1,11 +1,3 @@
-//
-//  MMC1Mapper.swift
-//  nesforgood
-//
-//  Created by kevin on 2025-10-30.
-//
-
-
 final class MMC1Mapper: Mapper {
     let prgROM: [UInt8]
     let chr: CHRMemory
@@ -202,7 +194,7 @@ final class MMC1Mapper: Mapper {
 
     func ppuA12Observe(addr: UInt16, ppuDot: UInt64) {
         let a12: UInt8 = (addr & 0x1000) != 0 ? 1 : 0
-        if prevA12 == 0 && a12 == 1 && ppuDot >= lastA12EdgeDot + 8 { // Debounce A12 edges
+        if prevA12 == 0 && a12 == 1 && ppuDot >= lastA12EdgeDot + 8 {
             a12EdgePending = true
             lastA12EdgeDot = ppuDot
         }
@@ -211,7 +203,7 @@ final class MMC1Mapper: Mapper {
 
     func applyPendingBankSwitchIfSafe(ppuDot: UInt64) {
         let cycle = Int(ppuDot % 341)
-        if cycle == 0 && a12EdgePending { // Apply at start of scanline
+        if cycle == 0 && a12EdgePending {
             if let po0 = pendingChrBank0Offset, let po1 = pendingChrBank1Offset {
                 
                 chrBank0Offset = po0

@@ -4,57 +4,42 @@ import AppKit
 import SwiftUI
 import Metal
 
-// MARK: - PPU (Picture Processing Unit)
 final class PPU {
-    // ===== CPU-visible registers =====
-    var ctrl: UInt8 = 0           // $2000
-    var mask: UInt8 = 0           // $2001
-    var status: UInt8 = 0         // $2002
-    var oamAddr: UInt8 = 0        // $2003
-    var scroll: UInt16 = 0        // synthesized from $2005 writes
-    var addr: UInt16 = 0          // synthesized from $2006 writes
-    var data: UInt8 = 0           // $2007 data port (buffered)
-    // MARK: - Bus connection
+    var ctrl: UInt8 = 0
+    var mask: UInt8 = 0
+    var status: UInt8 = 0
+    var oamAddr: UInt8 = 0
+    var scroll: UInt16 = 0
+    var addr: UInt16 = 0
+    var data: UInt8 = 0
     weak var bus: Bus?
-    // ===== Internal VRAM/palette/OAM =====
     private(set) var vram: [UInt8]
     private var palette = [UInt8](repeating: 0, count: 0x20)
     private var cachedPalette = [UInt8](repeating: 0, count: 0x20)
     var oam = [UInt8](repeating: 0xFF, count: 256)
     private var secondaryOAM = [UInt8](repeating: 0xFF, count: 32)
-    
-    
-    // ===== BG auto-detect for pattern table base =====
     private var bgAutoBaseLocked: Bool = false
     private var bgAutoBase: UInt16 = 0x0000
     private var bgAutoProbeCount: Int = 0
     private var bgAutoNonZeroSeen: Bool = false
     private var bgProbeLastLo: UInt8 = 0
     private var bgProbeBaseUsed: UInt16 = 0x0000
-// ===== Loopy registers =====
     private var v: UInt16 = 0
     private var t: UInt16 = 0
     private var x: UInt8 = 0
     private var w: Bool = false
     private var dataBuffer: UInt8 = 0
-    
-    // ===== Timing =====
     private(set) var cycle: Int = 0
     private(set) var scanline: Int = -1
     private(set) var frame: UInt64 = 0
     var frameReady: Bool = false
     var nmiPending: Bool = false
     private(set) var ppuDot: UInt64 = 0
-    // DEBUG counters
     private var dbgBgNonZeroPx: Int = 0
     private var dbgBgSamplerNonZero: Int = 0
     private var dbgFrames: UInt64 = 0
-    
-    // ===== Cartridge/mirroring =====
     private let cartridge: Cartridge
     private let baseMirroring: Mirroring
-    
-    // ===== Background shifters and prefetch =====
     private var bgNextTileId: UInt8 = 0
     private var bgNextTileAttrib: UInt8 = 0
     private var bgNextTileLsb: UInt8 = 0
@@ -63,23 +48,17 @@ final class PPU {
     private var bgShifterPatternHi: UInt16 = 0
     private var bgShifterAttribLo: UInt16 = 0
     private var bgShifterAttribHi: UInt16 = 0
-    
-    // ===== Sprite pipeline =====
     private var spriteCount: Int = 0
     private var spriteShifterPatternLo = [UInt8](repeating: 0, count: 8)
     private var spriteShifterPatternHi = [UInt8](repeating: 0, count: 8)
     private var spriteAttributes = [UInt8](repeating: 0, count: 8)
     private var spriteXPositions = [UInt8](repeating: 0, count: 8)
     private var spriteZeroHitPossible: Bool = false
-    
-    // ===== Packed framebuffer =====
     private let fbW = 256
     private let fbH = 240
     private let fbCount: Int
     private let fbBytesPerRow: Int
     private var fbPtr: UnsafeMutablePointer<UInt32>
-    
-    // ===== Reused CG objects =====
     private static let colorSpace = CGColorSpaceCreateDeviceRGB()
     private static let bitmapInfo: CGBitmapInfo = [
         .byteOrder32Little,
@@ -87,8 +66,6 @@ final class PPU {
     ]
     private var dataProvider: CGDataProvider!
     private var cachedCGImage: CGImage!
-    
-    // ===== System palette (64 entries) =====
     private static let sysPal: [UInt32] = [
         0x7C7C7C,0x0000FC,0x0000BC,0x4428BC,0x940084,0xA80020,0xA81000,0x881400,
         0x503000,0x007800,0x006800,0x005800,0x000058,0x000000,0x000000,0x000000,
@@ -100,7 +77,6 @@ final class PPU {
         0xF8D878,0xD8F878,0xB8F8B8,0xB8F8D8,0x00FCFC,0xF8D8F8,0x000000,0x000000
     ]
     
-    // ===== Loopy masks/mirroring helpers =====
     private let coarseXMask: UInt16 = 0x001F
     private let coarseYMask: UInt16 = 0x03E0
     private let nametableXMask: UInt16 = 0x0400
@@ -165,8 +141,6 @@ final class PPU {
             let v = status
             status &= 0x7F
             w = false
-            // FIX: NES does not clear nmiPending on $2002 read. Only NMI execution or PPU reset clears it.
-            // nmiPending = false // REMOVED
             return v
         case 0x2004:
             return oam[Int(oamAddr)]
@@ -292,19 +266,16 @@ final class PPU {
     
     func oamDMA(bus: Bus, value: UInt8) {
         let start = UInt16(value) << 8
-        // Clear OAM before DMA to avoid stale data
         oam = [UInt8](repeating: 0xFF, count: 256)
         
         for i in 0..<256 {
             let a = start + UInt16(i)
             let d = bus.cpuRead(address: a)
-            // Log every 4th byte (sprite Y-position)
             if i % 4 == 0 {
                 
             }
             oam[i] = d
         }
-        // Reset oamAddr after DMA
         oamAddr = 0
     }
     
@@ -352,7 +323,6 @@ final class PPU {
             }
         }
         
-        // FIX (Prev): Horizontal Transfer must happen on the pre-render scanline at cycle 257.
         if scanline == -1 && rendering && cycle == 257 {
             transferX()
         }
@@ -390,13 +360,11 @@ final class PPU {
             status = 0
             spriteZeroHitPossible = false
             nmiPending = false
-            // FIX (Robustness): MMC5 Scanline Counter Reset
             if let mapper = cartridge.mapper as? MMC5Mapper {
                 mapper.resetScanlineCounter()
             }
         }
         
-        // FIX: Moved MMC1 bank switch to a cleaner timing point (cycle 340 of pre-render line -1)
         if scanline == -1 && cycle == 340, let mmc1 = cartridge.mapper as? MMC1Mapper {
             mmc1.applyPendingBankSwitchIfSafe(ppuDot: ppuDot)
         }
@@ -448,7 +416,6 @@ final class PPU {
             let chrBank = mmc5.prgRAM?.data[exRamAddr] ?? 0
             base = UInt16(chrBank & 0x3F) << 12
         } else {
-            // Force base strictly from $2000 bit 4 (no auto-detect)
             base = ((ctrl & 0x10) != 0) ? UInt16(0x1000) : UInt16(0x0000)
         }
         bgProbeBaseUsed = base
@@ -466,14 +433,10 @@ final class PPU {
             let chrBank = mmc5.prgRAM?.data[exRamAddr] ?? 0
             base = UInt16(chrBank & 0x3F) << 12
         } else {
-            // Force base strictly from $2000 bit 4 (no auto-detect)
             base = ((ctrl & 0x10) != 0) ? UInt16(0x1000) : UInt16(0x0000)
         }
         bgNextTileMsb = ppuRead(addr: base &+ UInt16(bgNextTileId) &* 16 &+ ((v >> 12) & 0x0007) &+ 8)
-
-        // Auto-detect: if selected base is 0x1000 and repeated reads are zero, fall back to 0x0000 once
         if let mmc5 = cartridge.mapper as? MMC5Mapper, mmc5.extAttrEnabled {
-            // do nothing under MMC5 ext attributes
         } else if !bgAutoBaseLocked {
             if bgProbeBaseUsed == 0x1000 {
                 let both = bgProbeLastLo | bgNextTileMsb
@@ -501,26 +464,20 @@ final class PPU {
     
     @inline(__always) private func incY() {
         if (v & fineYMask) != 0x7000 {
-            v &+= 0x1000 // Increment fine Y (bits 12-14)
+            v &+= 0x1000
         } else {
-            v &= ~fineYMask // Clear fine Y
-            var cy = (v & coarseYMask) >> 5 // Get coarse Y (bits 5-9)
-            
-            // --- FIXED VERTICAL WRAP LOGIC ---
+            v &= ~fineYMask
+            var cy = (v & coarseYMask) >> 5
             if cy == 29 {
-                // coarse Y wraps from 29 to 0, toggles nametable Y bit (bit 11)
                 cy = 0
                 v ^= nametableYMask
             } else if cy == 31 {
-                // coarse Y wraps from 31 to 0 (no nametable toggle here)
                 cy = 0
             } else {
-                // normal increment
                 cy &+= 1
             }
-            // --- END FIXED VERTICAL WRAP LOGIC ---
             
-            v = (v & ~coarseYMask) | (cy << 5) // Write back coarse Y
+            v = (v & ~coarseYMask) | (cy << 5)
         }
     }
     
@@ -537,7 +494,6 @@ final class PPU {
         while n < 64 && spriteCount < 8 {
             let y = Int(oam[n*4 + 0])
             let dy = Int(scanline + 1) - y
-            // Skip invalid sprites (e.g., y-position 0xF8 or off-screen)
             if y == 0xF8 || dy < -height || dy >= height {
                 if spriteCount == 8 {
                     overflow = true
@@ -569,7 +525,6 @@ final class PPU {
     @inline(__always) private func fetchSpriteData() {
         let height = (ctrl & 0x20) == 0 ? 8 : 16
         var table: UInt16 = 0
-        // Lock CHR bank for MMC1 during sprite fetch
         var lockedBank0Offset: Int? = nil
         var lockedBank1Offset: Int? = nil
         if let mmc1 = cartridge.mapper as? MMC1Mapper {
@@ -636,7 +591,6 @@ final class PPU {
             spriteShifterPatternHi[i] = (attr & 0x40) != 0 ? rev8(hi) : hi
         }
         
-        // Dummy fetch for MMC3 IRQs
         if spriteCount == 0 {
             let addr = UInt16(0x1000)
             _ = ppuRead(addr: addr)
@@ -726,7 +680,7 @@ final class PPU {
         var fgPixel: UInt8 = 0, fgPal: UInt8 = 0
         var fgPri = false
         var fgIndex: Int? = nil
-        if spOn && spriteCount > 0 { // Ensure sprites are only rendered if enabled
+        if spOn && spriteCount > 0 {
             for i in 0..<spriteCount {
                 if spriteXPositions[i] == 0 {
                     let p1: UInt8 = (spriteShifterPatternHi[i] & 0x80) != 0 ? 1 : 0
@@ -744,10 +698,7 @@ final class PPU {
             if c < 8 && !leftSp { fgPixel = 0; fgPal = 0; fgIndex = nil }
         }
         
-        // FIX 1: Sprite 0 Hit suppression in cycles 1-8 if mask bit 2 is clear.
         if s0 != 0 && bgPixel != 0 && bgOn && spOn && c < 255 {
-            // c is 0-indexed column, so c=0 is cycle 1.
-            // Check if rendering is enabled in the left 8 pixels OR if c >= 8
             if (c >= 8) || (mask & 0x04) != 0 {
                 status |= 0x40
             }
@@ -869,7 +820,6 @@ final class PPU {
         x = 0
         clearFrame()
         cachePalette()
-        // Clear OAM to prevent stale data
         oam = [UInt8](repeating: 0xFF, count: 256)
         secondaryOAM = [UInt8](repeating: 0xFF, count: 32)
     }

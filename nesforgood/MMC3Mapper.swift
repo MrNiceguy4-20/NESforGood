@@ -3,30 +3,22 @@ final class MMC3Mapper: Mapper {
     let chr: CHRMemory
     let prgRAM: ExtRAM?
     private(set) var mirroring: Mirroring
-    
     private var bankSelect: UInt8 = 0
     private var bankData = [UInt8](repeating: 0, count: 8)
     private var prgMode: Bool { (bankSelect & 0x40) != 0 }
     private var chrMode: Bool { (bankSelect & 0x80) != 0 }
-    
-    // IRQ state
     private var irqLatch: UInt8 = 0
     private var irqCounter: UInt8 = 0
     private var irqReload: Bool = false
     private var irqEnabled: Bool = false
     private var irqAsserted: Bool = false
-    
-    // Edge tracking
     private var lastA12High: Bool = false
     private var lastEdgeDot: UInt64 = 0
     private var a12HighCount: UInt8 = 0
     private let a12Debounce: UInt64 = 12
     private let a12HighThreshold: UInt8 = 2
-    
-    // Delayed IRQ assertion
     private var irqPendingDelay: UInt64 = 0
     private let irqDelayCycles: UInt64 = 8
-    
     private let prgBankSize = 8192
     private let chr1K = 1024
     
@@ -84,7 +76,7 @@ final class MMC3Mapper: Mapper {
         case 0xA000...0xBFFE where address % 2 == 0:
             mirroring = (value & 0x01) == 0 ? .vertical : .horizontal
         case 0xA001...0xBFFF where address % 2 == 1:
-            _ = value // PRG-RAM protect ignored
+            _ = value 
         case 0xC000...0xDFFE where address % 2 == 0:
             irqLatch = value
         case 0xC001...0xDFFF where address % 2 == 1:
@@ -108,7 +100,6 @@ final class MMC3Mapper: Mapper {
         let r3 = Int(bankData[3]) * chr1K
         let r4 = Int(bankData[4]) * chr1K
         let r5 = Int(bankData[5]) * chr1K
-        
         let idx: Int
         if !chrMode {
             if a < 0x0400 { idx = r0 + a }
@@ -151,8 +142,6 @@ final class MMC3Mapper: Mapper {
                 }
             }
         } else if !a12High {
-            // FIX: Removed the aggressive reset of a12HighCount to improve stability
-            // a12HighCount = 0 // REMOVED
         }
         lastA12High = a12High
     }

@@ -2,7 +2,6 @@ import Foundation
 import GameController
 import AppKit
 
-// MARK: - NES Controller Input Mapping
 final class Controller {
     enum Button: CaseIterable {
         case a, b, select, start, up, down, left, right
@@ -22,16 +21,15 @@ final class Controller {
         setupGameController()
     }
 
-    // MARK: - Keyboard Handling
     private func setupKeyboardMonitor() {
         NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
             guard let self = self else { return event }
             let isPressed = (event.type == .keyDown)
             switch event.keyCode {
-            case 0x00: self.buttonStates[.a] = isPressed      // A key
-            case 0x0B: self.buttonStates[.b] = isPressed      // B key
-            case 0x31: self.buttonStates[.select] = isPressed // Space = Select
-            case 0x24: self.buttonStates[.start] = isPressed  // Return = Start
+            case 0x00: self.buttonStates[.a] = isPressed
+            case 0x0B: self.buttonStates[.b] = isPressed
+            case 0x31: self.buttonStates[.select] = isPressed
+            case 0x24: self.buttonStates[.start] = isPressed
             case 0x7E: self.buttonStates[.up] = isPressed
             case 0x7D: self.buttonStates[.down] = isPressed
             case 0x7B: self.buttonStates[.left] = isPressed
@@ -42,7 +40,6 @@ final class Controller {
         }
     }
 
-    // MARK: - Game Controller Support
     private func setupGameController() {
         NotificationCenter.default.addObserver(
             forName: .GCControllerDidConnect,
@@ -54,7 +51,6 @@ final class Controller {
             }
         }
 
-        // If already connected
         for controller in GCController.controllers() {
             configureGamepad(controller)
         }
@@ -63,7 +59,6 @@ final class Controller {
     private func configureGamepad(_ controller: GCController) {
         guard let gamepad = controller.extendedGamepad else { return }
 
-        // D-Pad
         gamepad.dpad.valueChangedHandler = { [weak self] _, x, y in
             guard let self = self else { return }
             self.buttonStates[.up] = y > 0.5
@@ -72,7 +67,6 @@ final class Controller {
             self.buttonStates[.right] = x > 0.5
         }
 
-        // Face buttons (no longer optional in macOS 13+)
         gamepad.buttonA.valueChangedHandler = { [weak self] _, _, pressed in
             self?.buttonStates[.a] = pressed
         }
@@ -81,7 +75,6 @@ final class Controller {
             self?.buttonStates[.b] = pressed
         }
 
-        // Optionally map shoulder buttons or menu button to Start/Select
         gamepad.leftShoulder.valueChangedHandler = { [weak self] _, _, pressed in
             self?.buttonStates[.select] = pressed
         }
@@ -90,7 +83,6 @@ final class Controller {
             self?.buttonStates[.start] = pressed
         }
 
-        // Handle pause/menu button as Start (if available)
         controller.controllerPausedHandler = { [weak self] _ in
             self?.buttonStates[.start] = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
@@ -99,11 +91,9 @@ final class Controller {
         }
     }
 
-    // MARK: - NES Register Interface
     func write(value: UInt8) {
         strobe = (value & 1) != 0
         if strobe {
-            // Reload the shift register with button states
             reloadShiftRegister()
         }
     }
@@ -114,12 +104,11 @@ final class Controller {
         }
         let bit = shiftRegister & 1
         shiftRegister >>= 1
-        shiftRegister |= 0x80 // ensures 1s after 8 reads
+        shiftRegister |= 0x80
         return bit
     }
 
     private func reloadShiftRegister() {
-        // NES controller shift register order: A, B, Select, Start, Up, Down, Left, Right
         var bits: UInt8 = 0
         for (i, button) in Button.allCases.enumerated() {
             if buttonStates[button] == true {

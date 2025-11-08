@@ -1,21 +1,17 @@
 import Foundation
 
 final class CPU {
-    // MARK: - Registers
     var A: UInt8 = 0
     var X: UInt8 = 0
     var Y: UInt8 = 0
     var SP: UInt8 = 0xFD
     var PC: UInt16 = 0
-    var P: UInt8 = 0x24  // NV-BDIZC (U bit set internally)
+    var P: UInt8 = 0x24
 
-    // MARK: - Bus
-    private let bus: Bus // FIX: let (doesn't mutate)
+    private let bus: Bus
 
-    // MARK: - Cycle counter (optional debug)
     var cycles: UInt64 = 0
 
-    // Prevent IRQ on same instruction after changing I / taking BRK/NMI/IRQ
     private var stallIRQThisInstruction = false
 
     init(bus: Bus) {
@@ -23,7 +19,6 @@ final class CPU {
         reset()
     }
 
-    // MARK: - Reset
     func reset() {
         PC = readWord(address: 0xFFFC)
         SP = 0xFD
@@ -32,7 +27,6 @@ final class CPU {
         stallIRQThisInstruction = false
     }
 
-    // MARK: - Memory helpers
     @inline(__always) private func read(address: UInt16) -> UInt8 {
         bus.cpuRead(address: address)
     }
@@ -47,7 +41,6 @@ final class CPU {
         return hi | lo
     }
 
-    // MARK: - Flags
     enum Flag: UInt8 {
         case C = 0b00000001, Z = 0b00000010, I = 0b00000100, D = 0b00001000
         case B = 0b00010000, U = 0b00100000, V = 0b01000000, N = 0b10000000
@@ -59,13 +52,11 @@ final class CPU {
     private func getFlag(_ f: Flag) -> Bool { (P & f.rawValue) != 0 }
     private func setZN(_ v: UInt8) { setFlag(.Z, v == 0); setFlag(.N, (v & 0x80) != 0) }
 
-    // MARK: - Stack
     private func push(_ v: UInt8) { write(address: 0x0100 | UInt16(SP), value: v); SP &-= 1 }
     private func pop() -> UInt8 { SP &+= 1; return read(address: 0x0100 | UInt16(SP)) }
     private func pushWord(_ w: UInt16) { push(UInt8((w >> 8) & 0xFF)); push(UInt8(w & 0xFF)) }
     private func popWord() -> UInt16 { let lo = UInt16(pop()); let hi = UInt16(pop()) << 8; return hi | lo }
 
-    // MARK: - Addressing modes
     private func immediate() -> UInt8 { let v = read(address: PC); PC &+= 1; return v }
     private func zeroPage() -> UInt16 { let a = UInt16(read(address: PC)); PC &+= 1; return a }
     private func zeroPageX() -> UInt16 { let b = read(address: PC); PC &+= 1; return UInt16((b &+ X) & 0xFF) }
@@ -81,7 +72,7 @@ final class CPU {
         let addr = base &+ UInt16(Y)
         return (addr, (addr & 0xFF00) != (base & 0xFF00))
     }
-    private func indirect() -> UInt16 { // JMP ($hhhh) page wrap bug
+    private func indirect() -> UInt16 {
         let ptr = readWord(address: PC); PC &+= 2
         let loAddr = ptr
         let hiAddr = (ptr & 0xFF00) | UInt16(UInt8((ptr & 0x00FF) &+ 1))
@@ -110,7 +101,6 @@ final class CPU {
         return (target, (base & 0xFF00) != (target & 0xFF00))
     }
 
-    // MARK: - ALU helpers (NES: decimal mode ignored)
     private func adc(_ v: UInt8) {
         let c: UInt16 = getFlag(.C) ? 1 : 0
         let s = UInt16(A) &+ UInt16(v) &+ c
@@ -119,7 +109,7 @@ final class CPU {
         setFlag(.V, (~(A ^ v) & (A ^ r) & 0x80) != 0)
         A = r; setZN(A)
     }
-    private func sbc(_ v: UInt8) { adc(~v) } // NES ignores decimal; SBC as ADC with ones' complement
+    private func sbc(_ v: UInt8) { adc(~v) }
 
     private func and(_ v: UInt8) { A &= v; setZN(A) }
     private func ora(_ v: UInt8) { A |= v; setZN(A) }
@@ -136,7 +126,6 @@ final class CPU {
     private func rolM(_ a: UInt16) { var v = read(address: a); let cin: UInt8 = getFlag(.C) ? 1 : 0; let newC = (v & 0x80) != 0; v = (v &<< 1) | cin; write(address: a, value: v); setFlag(.C, newC); setZN(v) }
     private func rorM(_ a: UInt16) { var v = read(address: a); let cin: UInt8 = getFlag(.C) ? 0x80 : 0; let newC = (v & 0x01) != 0; v = (v &>> 1) | cin; write(address: a, value: v); setFlag(.C, newC); setZN(v) }
 
-    // MARK: - Interrupts
     func nmi() {
         pushWord(PC)
         var f = P; f &= ~Flag.B.rawValue; f |= Flag.U.rawValue
@@ -173,7 +162,6 @@ final class CPU {
         PC = popWord()
     }
 
-    // MARK: - Undocumented helpers
     private func opSLO(_ addr: UInt16) { var v = read(address: addr); setFlag(.C, (v & 0x80) != 0); v &<<= 1; write(address: addr, value: v); ora(v) }
     private func opRLA(_ addr: UInt16) { var v = read(address: addr); let cin: UInt8 = getFlag(.C) ? 1 : 0; let newC = (v & 0x80) != 0; v = (v &<< 1) | cin; write(address: addr, value: v); setFlag(.C, newC); and(v) }
     private func opSRE(_ addr: UInt16) { var v = read(address: addr); setFlag(.C, (v & 0x01) != 0); v &>>= 1; write(address: addr, value: v); eor(v) }
@@ -203,11 +191,8 @@ final class CPU {
     private func opSHY(storeAddr: UInt16, effectiveBase: UInt16) { let v = Y & UInt8(((effectiveBase >> 8) & 0xFF) &+ 1); write(address: storeAddr, value: v) }
     private func opSHX(storeAddr: UInt16, effectiveBase: UInt16) { let v = X & UInt8(((effectiveBase >> 8) & 0xFF) &+ 1); write(address: storeAddr, value: v) }
 
-    // MARK: - Execute one instruction
-    /// Executes one instruction and returns its cycle count.
     @discardableResult
     func step() -> Int {
-        // --- OAM DMA stall handling (513/514 cycles) ---
         if let core = bus.core, core.dmaActive {
             if core.dmaCyclesLeft > 0 {
                 core.dmaCyclesLeft &-= 1
@@ -215,7 +200,7 @@ final class CPU {
                 if core.dmaCyclesLeft == 0 {
                     core.dmaActive = false
                 }
-                return 1 // consume one CPU cycle while DMA is active
+                return 1
             }
         }
 let opcode = read(address: PC)
@@ -224,93 +209,67 @@ let opcode = read(address: PC)
 
         switch opcode {
             case 0xEB:
-                // Unofficial SBC #imm alias
-                // fallthrough to 0xE9
-                // Implement by reusing SBC immediate path
                 let value = immediate()
                 sbc(value)
 return 2
             case 0xFC:
-                // Unofficial NOP abs,X
                 execIllegalNOP(2)
 return 2
             case 0xDC:
-                // Unofficial NOP abs,X
                 execIllegalNOP(2)
 return 2
             case 0x7C:
-                // Unofficial NOP abs,X
                 execIllegalNOP(2)
 return 2
             case 0x5C:
-                // Unofficial NOP abs,X
                 execIllegalNOP(2)
 return 2
             case 0x3C:
-                // Unofficial NOP abs,X
                 execIllegalNOP(2)
 return 2
             case 0xF4:
-                // Unofficial NOP zp,X
                 execIllegalNOP(1)
 return 2
             case 0xD4:
-                // Unofficial NOP zp,X
                 execIllegalNOP(1)
 return 2
             case 0x74:
-                // Unofficial NOP zp,X
                 execIllegalNOP(1)
 return 2
             case 0x54:
-                // Unofficial NOP zp,X
                 execIllegalNOP(1)
 return 2
             case 0x34:
-                // Unofficial NOP zp,X
                 execIllegalNOP(1)
 return 2
             case 0x64:
-                // Unofficial NOP zp
                 execIllegalNOP(1)
 return 2
             case 0x44:
-                // Unofficial NOP zp
                 execIllegalNOP(1)
 return 2
             case 0xE2:
-                // Unofficial NOP #imm
                 execIllegalNOP(1)
 return 2
             case 0xC2:
-                // Unofficial NOP #imm
                 execIllegalNOP(1)
 return 2
             case 0x89:
-                // Unofficial NOP #imm
                 execIllegalNOP(1)
 return 2
             case 0x82:
-                // Unofficial NOP #imm
                 execIllegalNOP(1)
 return 2
             case 0xFA:
-                // Unofficial NOP (implied)
 return 2
             case 0xDA:
-                // Unofficial NOP (implied)
 return 2
             case 0x7A:
-                // Unofficial NOP (implied)
 return 2
             case 0x5A:
-                // Unofficial NOP (implied)
 return 2
             case 0x3A:
-                // Unofficial NOP (implied)
 return 2
-        // ======== LOAD / STORE ========
-        // LDA
         case 0xA9:
             c = 2; A = immediate(); setZN(A)
         case 0xA5:
@@ -319,11 +278,11 @@ return 2
             c = 4; A = read(address: zeroPageX()); setZN(A)
         case 0xAD:
             c = 4; A = read(address: absolute()); setZN(A)
-        case 0xBD: // LDA abs,X
+        case 0xBD:
             let (aBD, xpBD) = absoluteX()
             c = 4 + (xpBD ? 1 : 0)
             A = read(address: aBD); setZN(A)
-        case 0xB9: // LDA abs,Y
+        case 0xB9:
             let (aB9, ypB9) = absoluteY()
             c = 4 + (ypB9 ? 1 : 0)
             A = read(address: aB9); setZN(A)
@@ -334,7 +293,6 @@ return 2
             c = 5 + (ypB1 ? 1 : 0)
             A = read(address: aB1); setZN(A)
 
-        // LDX
         case 0xA2:
             c = 2; X = immediate(); setZN(X)
         case 0xA6:
@@ -348,7 +306,6 @@ return 2
             c = 4 + (ypBE ? 1 : 0)
             X = read(address: aBE); setZN(X)
 
-        // LDY
         case 0xA0:
             c = 2; Y = immediate(); setZN(Y)
         case 0xA4:
@@ -362,7 +319,6 @@ return 2
             c = 4 + (xpBC ? 1 : 0)
             Y = read(address: aBC); setZN(Y)
 
-        // STA
         case 0x85:
             c = 3; write(address: zeroPage(), value: A)
         case 0x95:
@@ -381,7 +337,6 @@ return 2
             let (a91, _) = indirectY()
             c = 6; write(address: a91, value: A)
 
-        // STX
         case 0x86:
             c = 3; write(address: zeroPage(), value: X)
         case 0x96:
@@ -389,7 +344,6 @@ return 2
         case 0x8E:
             c = 4; write(address: absolute(), value: X)
 
-        // STY
         case 0x84:
             c = 3; write(address: zeroPage(), value: Y)
         case 0x94:
@@ -397,18 +351,16 @@ return 2
         case 0x8C:
             c = 4; write(address: absolute(), value: Y)
 
-        // ======== REGISTER TRANSFERS ========
-        case 0xAA: c = 2; X = A; setZN(X) // TAX
-        case 0x8A: c = 2; A = X; setZN(A) // TXA
-        case 0xA8: c = 2; Y = A; setZN(Y) // TAY
-        case 0x98: c = 2; A = Y; setZN(A) // TYA
-        case 0xBA: c = 2; X = SP; setZN(X) // TSX
-        case 0x9A: c = 2; SP = X           // TXS
+        case 0xAA: c = 2; X = A; setZN(X)
+        case 0x8A: c = 2; A = X; setZN(A)
+        case 0xA8: c = 2; Y = A; setZN(Y)
+        case 0x98: c = 2; A = Y; setZN(A)
+        case 0xBA: c = 2; X = SP; setZN(X)
+        case 0x9A: c = 2; SP = X
 
-        // ======== STACK ========
-        case 0x48: c = 3; push(A)                 // PHA
-        case 0x68: c = 4; A = pop(); setZN(A)     // PLA
-        case 0x08: c = 3; push(P | Flag.B.rawValue | Flag.U.rawValue) // PHP
+        case 0x48: c = 3; push(A)
+        case 0x68: c = 4; A = pop(); setZN(A)
+        case 0x08: c = 3; push(P | Flag.B.rawValue | Flag.U.rawValue)
         case 0x28:
             c = 4
             var fPLP = pop()
@@ -416,8 +368,6 @@ return 2
             fPLP &= ~Flag.B.rawValue
             P = fPLP
 
-        // ======== LOGIC ========
-        // AND
         case 0x29: c = 2; and(immediate())
         case 0x25: c = 3; and(read(address: zeroPage()))
         case 0x35: c = 4; and(read(address: zeroPageX()))
@@ -436,7 +386,6 @@ return 2
             c = 5 + (yp31 ? 1 : 0)
             and(read(address: a31))
 
-        // ORA
         case 0x09: c = 2; ora(immediate())
         case 0x05: c = 3; ora(read(address: zeroPage()))
         case 0x15: c = 4; ora(read(address: zeroPageX()))
@@ -455,7 +404,6 @@ return 2
             c = 5 + (yp11 ? 1 : 0)
             ora(read(address: a11))
 
-        // EOR
         case 0x49: c = 2; eor(immediate())
         case 0x45: c = 3; eor(read(address: zeroPage()))
         case 0x55: c = 4; eor(read(address: zeroPageX()))
@@ -474,7 +422,6 @@ return 2
             c = 5 + (yp51 ? 1 : 0)
             eor(read(address: a51))
 
-        // BIT
         case 0x24:
             c = 3
             let v24 = read(address: zeroPage())
@@ -484,8 +431,6 @@ return 2
             let v2C = read(address: absolute())
             setFlag(.Z, (A & v2C) == 0); setFlag(.V, (v2C & 0x40) != 0); setFlag(.N, (v2C & 0x80) != 0)
 
-        // ======== ARITHMETIC ========
-        // ADC
         case 0x69: c = 2; adc(immediate())
         case 0x65: c = 3; adc(read(address: zeroPage()))
         case 0x75: c = 4; adc(read(address: zeroPageX()))
@@ -504,7 +449,6 @@ return 2
             c = 5 + (yp71 ? 1 : 0)
             adc(read(address: a71))
 
-        // SBC
         case 0xE9: c = 2; sbc(immediate())
         case 0xE5: c = 3; sbc(read(address: zeroPage()))
         case 0xF5: c = 4; sbc(read(address: zeroPageX()))
@@ -523,7 +467,6 @@ return 2
             c = 5 + (ypF1 ? 1 : 0)
             sbc(read(address: aF1))
 
-        // CMP/CPX/CPY
         case 0xC9: c = 2; cmp(A, immediate())
         case 0xC5: c = 3; cmp(A, read(address: zeroPage()))
         case 0xD5: c = 4; cmp(A, read(address: zeroPageX()))
@@ -542,15 +485,14 @@ return 2
             c = 5 + (ypD1 ? 1 : 0)
             cmp(A, read(address: aD1))
 
-        case 0xE0: c = 2; cmp(X, immediate()) // CPX
+        case 0xE0: c = 2; cmp(X, immediate())
         case 0xE4: c = 3; cmp(X, read(address: zeroPage()))
         case 0xEC: c = 4; cmp(X, read(address: absolute()))
 
-        case 0xC0: c = 2; cmp(Y, immediate()) // CPY
+        case 0xC0: c = 2; cmp(Y, immediate())
         case 0xC4: c = 3; cmp(Y, read(address: zeroPage()))
         case 0xCC: c = 4; cmp(Y, read(address: absolute()))
 
-        // INC/DEC (+ X/Y inc/dec)
         case 0xE6:
             c = 5; do { let a = zeroPage(); var v = read(address: a); v &+= 1; write(address: a, value: v); setZN(v) }
         case 0xF6:
@@ -573,18 +515,16 @@ return 2
             let (aDE, _) = absoluteX()
             var vDE = read(address: aDE); vDE &-= 1; write(address: aDE, value: vDE); setZN(vDE)
 
-        case 0xE8: c = 2; X &+= 1; setZN(X) // INX
-        case 0xC8: c = 2; Y &+= 1; setZN(Y) // INY
-        case 0xCA: c = 2; X &-= 1; setZN(X) // DEX
-        case 0x88: c = 2; Y &-= 1; setZN(Y) // DEY
+        case 0xE8: c = 2; X &+= 1; setZN(X)
+        case 0xC8: c = 2; Y &+= 1; setZN(Y)
+        case 0xCA: c = 2; X &-= 1; setZN(X)
+        case 0x88: c = 2; Y &-= 1; setZN(Y)
 
-        // Shifts/rotates (A)
         case 0x0A: c = 2; aslA()
         case 0x4A: c = 2; lsrA()
         case 0x2A: c = 2; rolA()
         case 0x6A: c = 2; rorA()
 
-        // Shifts/rotates (mem)
         case 0x06:
             c = 5; aslM(zeroPage())
         case 0x16:
@@ -629,11 +569,10 @@ return 2
             let (a7E, _) = absoluteX()
             rorM(a7E)
 
-        // ======== JUMPS / CALLS ========
         case 0x4C:
-            c = 3; PC = absolute()          // JMP abs
+            c = 3; PC = absolute()
         case 0x6C:
-            c = 5; PC = indirect()          // JMP (ind)
+            c = 5; PC = indirect()
         case 0x20:
             c = 6
             let t = absolute()
@@ -641,63 +580,62 @@ return 2
             pushWord(ret)
             PC = t
         case 0x60:
-            c = 6; PC = popWord() &+ 1      // RTS
+            c = 6; PC = popWord() &+ 1
         case 0x00:
-            c = 7; brk()                    // BRK
+            c = 7; brk()
         case 0x40:
-            c = 6; rti()                    // RTI
+            c = 6; rti()
 
-        // ======== BRANCHES ========
-        case 0x90: // BCC
+        case 0x90:
             c = 2
             if !getFlag(.C) {
                 let (t, cross) = relative()
                 c &+= 1; if cross { c &+= 1 }
                 PC = t
             } else { _ = relative() }
-        case 0xB0: // BCS
+        case 0xB0:
             c = 2
             if getFlag(.C) {
                 let (t, cross) = relative()
                 c &+= 1; if cross { c &+= 1 }
                 PC = t
             } else { _ = relative() }
-        case 0xF0: // BEQ
+        case 0xF0:
             c = 2
             if getFlag(.Z) {
                 let (t, cross) = relative()
                 c &+= 1; if cross { c &+= 1 }
                 PC = t
             } else { _ = relative() }
-        case 0x30: // BMI
+        case 0x30:
             c = 2
             if getFlag(.N) {
                 let (t, cross) = relative()
                 c &+= 1; if cross { c &+= 1 }
                 PC = t
             } else { _ = relative() }
-        case 0xD0: // BNE
+        case 0xD0:
             c = 2
             if !getFlag(.Z) {
                 let (t, cross) = relative()
                 c &+= 1; if cross { c &+= 1 }
                 PC = t
             } else { _ = relative() }
-        case 0x10: // BPL
+        case 0x10:
             c = 2
             if !getFlag(.N) {
                 let (t, cross) = relative()
                 c &+= 1; if cross { c &+= 1 }
                 PC = t
             } else { _ = relative() }
-        case 0x50: // BVC
+        case 0x50:
             c = 2
             if !getFlag(.V) {
                 let (t, cross) = relative()
                 c &+= 1; if cross { c &+= 1 }
                 PC = t
             } else { _ = relative() }
-        case 0x70: // BVS
+        case 0x70:
             c = 2
             if getFlag(.V) {
                 let (t, cross) = relative()
@@ -705,21 +643,16 @@ return 2
                 PC = t
             } else { _ = relative() }
 
-        // ======== FLAGS ========
-        case 0x18: c = 2; setFlag(.C, false) // CLC
-        case 0x38: c = 2; setFlag(.C, true)  // SEC
-        case 0x58: c = 2; setFlag(.I, false) // CLI
-        case 0x78: c = 2; setFlag(.I, true)  // SEI
-        case 0xB8: c = 2; setFlag(.V, false) // CLV
-        case 0xD8: c = 2; setFlag(.D, false) // CLD
-        case 0xF8: c = 2; setFlag(.D, true)  // SED
+        case 0x18: c = 2; setFlag(.C, false)
+        case 0x38: c = 2; setFlag(.C, true)
+        case 0x58: c = 2; setFlag(.I, false)
+        case 0x78: c = 2; setFlag(.I, true)
+        case 0xB8: c = 2; setFlag(.V, false)
+        case 0xD8: c = 2; setFlag(.D, false)
+        case 0xF8: c = 2; setFlag(.D, true)
 
-        // ======== NOP (official) ========
-        case 0xEA: c = 2 // NOP
+        case 0xEA: c = 2
 
-        // ======== UNDOCUMENTED OPCODES ========
-
-        // --- LAX (load A and X) ---
         case 0xA7: c = 3; opLAX(read(address: zeroPage()))
         case 0xB7: c = 4; opLAX(read(address: zeroPageY()))
         case 0xAF: c = 4; opLAX(read(address: absolute()))
@@ -733,13 +666,11 @@ return 2
             c = 5 + (ypB3 ? 1 : 0)
             opLAX(read(address: aB3))
 
-        // --- SAX (aka AAX) store A & X ---
         case 0x87: c = 3; opSAX(zeroPage())
         case 0x97: c = 4; opSAX(zeroPageY())
         case 0x8F: c = 4; opSAX(absolute())
         case 0x83: c = 6; opSAX(indirectX())
 
-        // --- DCP (DEC mem; CMP) ---
         case 0xC7: c = 5; opDCP(zeroPage())
         case 0xD7: c = 6; opDCP(zeroPageX())
         case 0xCF: c = 6; opDCP(absolute())
@@ -747,12 +678,11 @@ return 2
             c = 7
             let (aDF, _) = absoluteX()
             opDCP(aDF)
-        case 0xDB, 0xD3: // FIX: merged duplicates
+        case 0xDB, 0xD3:
             c = 8
             let (aD3, _) = indirectY()
             opDCP(aD3)
 
-        // --- ISC/ISB (INC mem; SBC) ---
         case 0xE7: c = 5; opISC(zeroPage())
         case 0xF7: c = 6; opISC(zeroPageX())
         case 0xEF: c = 6; opISC(absolute())
@@ -765,7 +695,6 @@ return 2
             let (aF3, _) = indirectY()
             opISC(aF3)
 
-        // --- SLO (ASL; ORA) ---
         case 0x07: c = 5; opSLO(zeroPage())
         case 0x17: c = 6; opSLO(zeroPageX())
         case 0x0F: c = 6; opSLO(absolute())
@@ -778,7 +707,6 @@ return 2
             let (a13, _) = indirectY()
             opSLO(a13)
 
-        // --- RLA (ROL; AND) ---
         case 0x27: c = 5; opRLA(zeroPage())
         case 0x37: c = 6; opRLA(zeroPageX())
         case 0x2F: c = 6; opRLA(absolute())
@@ -791,7 +719,6 @@ return 2
             let (a33, _) = indirectY()
             opRLA(a33)
 
-        // --- SRE (LSR; EOR) ---
         case 0x47: c = 5; opSRE(zeroPage())
         case 0x57: c = 6; opSRE(zeroPageX())
         case 0x4F: c = 6; opSRE(absolute())
@@ -804,7 +731,6 @@ return 2
             let (a53, _) = indirectY()
             opSRE(a53)
 
-        // --- RRA (ROR; ADC) ---
         case 0x67: c = 5; opRRA(zeroPage())
         case 0x77: c = 6; opRRA(zeroPageX())
         case 0x6F: c = 6; opRRA(absolute())
@@ -817,13 +743,11 @@ return 2
             let (a73, _) = indirectY()
             opRRA(a73)
 
-        // --- ANC / ALR / ARR / AXS ---
         case 0x0B, 0x2B: c = 2; opANC(immediate())
         case 0x4B: c = 2; opALR(immediate())
         case 0x6B: c = 2; opARR(immediate())
         case 0xCB: c = 2; opAXS(immediate())
 
-        // --- LAS / TAS / AHX / SHY / SHX ---
         case 0xBB:
             let (aBB, ypBB) = absoluteY()
             c = 4 + (ypBB ? 1 : 0)
@@ -857,7 +781,6 @@ return 2
             c = 5
             opSHX(storeAddr: addr9E, effectiveBase: base9E)
 
-        // --- NOP Variants ---
         case 0x1A, 0x3A, 0x5A, 0x7A, 0xDA, 0xFA:
             c = 2
         case 0x80, 0x82, 0x89, 0xC2, 0xE2:
@@ -871,9 +794,8 @@ return 2
         case 0x1C, 0x3C, 0x5C, 0x7C, 0xDC, 0xFC:
             let (_, cross) = absoluteX(); c = 4 + (cross ? 1 : 0)
 
-        // ======== FALLBACK ========
         default:
-            c = 2 // NOP fallback for undefined opcodes
+            c = 2
         }
 
         if stallIRQThisInstruction { stallIRQThisInstruction = false }
@@ -881,11 +803,8 @@ return 2
         return c
     }
 
-    // MARK: - Unofficial NOP helper
     @inline(__always) private func execIllegalNOP(_ bytes: Int) {
-        // Consume operand bytes without changing state
         for _ in 0..<bytes { _ = immediate() }
-        // NOP: cycles handled by decoder's base; this minimal path keeps timing close enough for most carts
     }
     
 }

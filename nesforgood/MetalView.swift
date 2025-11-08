@@ -14,13 +14,10 @@ enum ShaderMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-// SwiftUI wrapper with extended uniforms (gamma, curvature, colorTemp) and frame pacing controls.
 struct MetalView: NSViewRepresentable {
     let emulator: EmulatorCore
     var scaleMode: ScaleMode
     var shaderMode: ShaderMode
-
-    // Phase 5
     var vsyncEnabled: Bool
     var frameLimit: Int
     var gamma: Float
@@ -37,7 +34,6 @@ struct MetalView: NSViewRepresentable {
         view.preferredFramesPerSecond = vsyncEnabled ? frameLimit : max(30, frameLimit)
         view.clearColor = MTLClearColorMake(0, 0, 0, 1)
         context.coordinator.configure(view: view, emulator: emulator, scaleMode: scaleMode, shaderMode: shaderMode)
-        // seed uniforms
         context.coordinator.gamma = gamma
         context.coordinator.colorTemp = colorTemp
         context.coordinator.curvature = curvature
@@ -60,14 +56,13 @@ struct MetalView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 }
 
-// CPU mirror of shader uniforms
 struct Uniforms {
-    var texSize: SIMD2<Float>   // 256x240
-    var mode: UInt32            // 0=none,1=scan
-    var gamma: Float            // 0.8..1.4
-    var curvature: Float        // 0..~0.2
-    var colorTemp: Float        // 0..1 (cool..warm)
-    var _pad: Float             // alignment
+    var texSize: SIMD2<Float>
+    var mode: UInt32
+    var gamma: Float
+    var curvature: Float
+    var colorTemp: Float
+    var _pad: Float
 }
 
 final class Coordinator: NSObject, MTKViewDelegate {
@@ -84,8 +79,6 @@ final class Coordinator: NSObject, MTKViewDelegate {
 
     var scaleMode: ScaleMode = .integer
     var shaderMode: ShaderMode = .none
-
-    // Phase 5
     var gamma: Float = 1.0
     var colorTemp: Float = 0.0
     var curvature: Float = 0.0
@@ -128,19 +121,14 @@ final class Coordinator: NSObject, MTKViewDelegate {
               let drawable = view.currentDrawable,
               let passDesc = view.currentRenderPassDescriptor,
               let device = view.device else { return }
-
-        // ---- Frame pacing (simple limiter when vsync disabled) ----
         if !vsyncEnabled {
             let now = CACurrentMediaTime()
             let target = 1.0 / Double(max(1, frameLimit))
-            if now - lastTime < target { return } // skip draw to respect limiter
+            if now - lastTime < target { return } 
             lastTime = now
         }
 
-        // Drive one emulation frame
         emulator.runOneFrame()
-
-        // Upload/update source texture
         if srcTexture == nil {
             srcTexture = emulator.ppu?.makeTexture(device: device)
         } else if let ppu = emulator.ppu, let tex = srcTexture {
@@ -148,7 +136,6 @@ final class Coordinator: NSObject, MTKViewDelegate {
         }
         guard let source = srcTexture else { return }
 
-        // Compute destination quad
         let baseW: CGFloat = 256, baseH: CGFloat = 240
         let dw = view.drawableSize.width, dh = view.drawableSize.height
         var W: CGFloat, H: CGFloat
@@ -185,7 +172,6 @@ final class Coordinator: NSObject, MTKViewDelegate {
             for i in 0..<verts.count { ptr[i] = verts[i] }
         }
 
-        // Update uniforms
         if let ub = ub {
             let U = ub.contents().bindMemory(to: Uniforms.self, capacity: 1)
             U.pointee.mode = (shaderMode == .scanlines) ? 1 : 0

@@ -1,17 +1,8 @@
-//
-//  MMC4Mapper.swift
-//  nesforgood
-//
-//  Created by kevin on 2025-10-30.
-//
-
-
 final class MMC4Mapper: Mapper {
     let prgROM: [UInt8]
     let chr: CHRMemory
     let prgRAM: ExtRAM?
     private(set) var mirroring: Mirroring
-
     private var prgBank: UInt8 = 0
     private var chrFD0: UInt8 = 0
     private var chrFE0: UInt8 = 0
@@ -85,7 +76,6 @@ final class MMC4Mapper: Mapper {
         }
         let idx = Int(bank) * 0x1000 + (addr % 0x1000)
         let value = chr.data[idx % chr.data.count]
-
         let triggerAddr = address & 0x3FFF
         if (0x0FD8...0x0FDF).contains(triggerAddr) {
             latch0 = 0xFD

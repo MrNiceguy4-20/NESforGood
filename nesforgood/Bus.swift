@@ -1,8 +1,6 @@
 import Foundation
 
 final class Bus {
-    // MARK: - MMC1 (Mapper 1) state
-    // Kept to avoid changing the Bus class structure, though unused now.
     private var mmc1Shift: UInt8 = 0x10
     private var mmc1Control: UInt8 = 0x0C
     private var mmc1CHR0: UInt8 = 0
@@ -11,14 +9,9 @@ final class Bus {
     private var mmc1PRGRAMDisable: Bool = false
     private var mmc1Mirroring: UInt8 = 2
     private var prgRAM: [UInt8] = Array(repeating: 0, count: 0x2000)
-    
-    // MARK: - ROM data buffers
     public var prg: [UInt8] = []
     public var chr: [UInt8] = []
-    
-    // MARK: - Mapper integration
     var mapperID: Int = 0
-    // Kept to avoid changing the Bus class structure, though unused now.
     private var mmc3PRGBanks: [Int] = [0, 0, -2, -1]
     private var mmc3CHR: [Int] = Array(repeating: 0, count: 8)
     private var mmc3BankSelect: UInt8 = 0
@@ -28,7 +21,6 @@ final class Bus {
     private var mmc3IRQReload: UInt8 = 0
     private var mmc3IRQEnabled: Bool = false
     private var mmc3IRQPending: Bool = false
-    
     public var mapperIRQAsserted: Bool {
         return cartridge.mapper.mapperIRQAsserted()
     }
@@ -83,11 +75,9 @@ final class Bus {
             return value
         }
         
-        // FIX: Route all high memory reads directly to the mapper/cartridge.
         if address >= 0x6000 {
             return cartridge.mapper.cpuRead(address: address)
         }
-        // Old redundant MMC1/MMC3 logic removed.
         
         switch address {
         case 0x0000...0x1FFF:
@@ -116,12 +106,10 @@ final class Bus {
     
     func cpuWrite(address: UInt16, value: UInt8) {
         
-        // FIX: Route all high memory writes directly to the mapper/cartridge.
         if address >= 0x6000 {
             cartridge.mapper.cpuWrite(address: address, value: value)
             return
         }
-        // Old redundant MMC1/MMC3 logic removed.
         
         switch address {
         case 0x0000...0x1FFF:

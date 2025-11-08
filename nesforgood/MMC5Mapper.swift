@@ -1,11 +1,3 @@
-//
-//  MMC5Mapper.swift
-//  nesforgood
-//
-//  Created by kevin on 2025-10-30.
-//
-
-
 final class MMC5Mapper: Mapper {
     let prgROM: [UInt8]
     let chr: CHRMemory
@@ -239,10 +231,10 @@ final class MMC5Mapper: Mapper {
 
     private var chrSlotSize: Int {
         switch chrMode {
-        case 0: return 8192 // 8KB
-        case 1: return 4096 // 4KB
-        case 2: return 2048 // 2KB
-        case 3: return 1024 // 1KB
+        case 0: return 8192
+        case 1: return 4096
+        case 2: return 2048
+        case 3: return 1024
         default: return 1024
         }
     }
@@ -279,7 +271,6 @@ final class MMC5Mapper: Mapper {
         }
     }
     
-    // FIX: MMC5 Scanline Counter Reset
     func resetScanlineCounter() {
         scanlineCounter = 0
         inFrame = false

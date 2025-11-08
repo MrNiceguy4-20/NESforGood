@@ -1,4 +1,3 @@
-
 #include <metal_stdlib>
 using namespace metal;
 
@@ -13,11 +12,11 @@ struct VSOut {
 };
 
 struct Uniforms {
-    float2 texSize;    // 256,240
-    uint   mode;       // 0=none, 1=scanlines
-    float  gamma;      // 0.8..1.4
-    float  curvature;  // 0..~0.2
-    float  colorTemp;  // 0..1 (cool..warm)
+    float2 texSize;
+    uint   mode;
+    float  gamma;
+    float  curvature;
+    float  colorTemp;
     float  _pad;
 };
 
@@ -29,7 +28,6 @@ vertex VSOut v_main(const device VertexIn* verts [[buffer(0)]], uint vid [[verte
     return out;
 }
 
-// Simple color temperature adjustment: mix cool (bluish) and warm (reddish) tints
 float3 applyColorTemp(float3 rgb, float t) {
     float3 cool  = float3(0.95, 0.98, 1.05);
     float3 warm  = float3(1.05, 1.02, 0.95);
@@ -37,7 +35,6 @@ float3 applyColorTemp(float3 rgb, float t) {
     return rgb * tint;
 }
 
-// Barrel distortion in texture space
 float2 crtWarp(float2 uv, float amount) {
     float2 xy = uv * 2.0 - 1.0;
     float r2 = dot(xy, xy);

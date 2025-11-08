@@ -1,11 +1,3 @@
-//
-//  DMCChannel.swift
-//  nesforgood
-//
-//  Created by kevin on 2025-10-30.
-//
-
-
 final class DMCChannel {
     weak var apu: APU?
     
@@ -61,12 +53,11 @@ final class DMCChannel {
     private func fetchNextByte() {
         guard let bus = apu?.bus else { return }
         let byte = bus.cpuRead(address: currentAddress)
-        // Each DMC memory fetch steals 4 CPU cycles
         apu?.dmcStallCycles &+= 4
         shiftRegister = byte
         silence = false
         currentAddress &+= 1
-        if currentAddress == 0 { currentAddress = 0x8000 } // wrap
+        if currentAddress == 0 { currentAddress = 0x8000 }
         if bytesRemaining > 0 { bytesRemaining &-= 1 }
         if bytesRemaining == 0 {
             if loop {
@@ -81,12 +72,9 @@ final class DMCChannel {
         if timer == 0 {
             timer = DMCChannel.rateTable[Int(rateIndex)]
 
-            // Align memory fetch to timer edges when shifter is idle
             if silence && bytesRemaining > 0 && bitCount == 8 {
                 fetchNextByte()
             }
-
-            // Output unit tick
 
             if !silence {
                 if (shiftRegister & 1) != 0 {
@@ -101,7 +89,6 @@ final class DMCChannel {
             if bitCount == 0 {
                 bitCount = 8
                 if bytesRemaining > 0 {
-                    // Schedule an immediate fetch to avoid underruns
                     fetchNextByte()
                 } else {
                     silence = true

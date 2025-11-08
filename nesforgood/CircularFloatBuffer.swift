@@ -1,11 +1,3 @@
-//
-//  CircularFloatBuffer.swift
-//  nesforgood
-//
-//  Created by kevin on 2025-10-30.
-//
-
-
 final class CircularFloatBuffer {
     private let capacityMask: Int
     private var buffer: [Float]

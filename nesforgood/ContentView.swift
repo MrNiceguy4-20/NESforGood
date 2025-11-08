@@ -10,22 +10,17 @@ struct ContentView: View {
     @State private var fps: Double = 0
     @State private var romName: String = "No ROM loaded"
     @State private var lastSerial: UInt64 = 0
-
-    // Phase 4 controls
     @State private var scaleMode: ScaleMode = .integer
     @State private var shaderMode: ShaderMode = .none
-
-    // Phase 5 controls
     @State private var vsyncEnabled: Bool = true
-    @State private var frameLimit: Int = 60 // 30 / 60 / 120
-    @State private var gamma: Double = 1.0 // 0.8 ... 1.4
+    @State private var frameLimit: Int = 60
+    @State private var gamma: Double = 1.0
     @State private var crtEnabled: Bool = true
-    @State private var colorTemp: Double = 0.0 // 0=cool, 1=warm
-    @State private var curvature: Double = 0.08 // 0...0.2 gentle CRT
+    @State private var colorTemp: Double = 0.0
+    @State private var curvature: Double = 0.08
 
     var body: some View {
         VStack(spacing: 0) {
-            // Display
             ZStack {
                 MetalView(
                     emulator: emulator,
@@ -47,7 +42,6 @@ struct ContentView: View {
 
             Divider()
 
-            // Status bar
             HStack(spacing: 16) {
                 Spacer()
                 Text("ROM: \(romName)")
@@ -82,7 +76,6 @@ struct ContentView: View {
                     Label("Reset", systemImage: "arrow.clockwise")
                 }
 
-                // Phase 4 (inline): Scale + Shader
                 HStack(spacing: 8) {
                     Text("Scale:").font(.headline)
                     Picker("Scale", selection: $scaleMode) {
@@ -109,7 +102,6 @@ struct ContentView: View {
                     .cornerRadius(12)
                 }.padding(.horizontal, 6)
 
-                // Phase 5 (inline): VSync + Frame limit + Gamma + Temp
                 Toggle("VSync", isOn: $vsyncEnabled)
                 Toggle("CRT Mode", isOn: $crtEnabled)
                     .toggleStyle(.switch)

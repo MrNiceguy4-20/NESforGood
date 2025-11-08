@@ -1,20 +1,10 @@
-//
-//  TriangleChannel.swift
-//  nesforgood
-//
-//  Created by kevin on 2025-10-30.
-//
-
-
 class TriangleChannel {
     weak var apu: APU?
-    
     var enabled: Bool = false
     var lengthHalt: Bool = false
     var linearLoad: UInt8 = 0
     var linearReload: Bool = false
     var linearCounter: UInt8 = 0
-    
     var period: UInt16 = 0
     var timer: UInt16 = 0
     var lengthCounter: UInt8 = 0
