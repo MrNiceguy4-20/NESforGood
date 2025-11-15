@@ -2,82 +2,73 @@ import Foundation
 import AVFoundation
 
 class APU {
-    // If you'll access the APU from multiple threads, protect shared state (see notes below).
     public var dmcStallCycles: Int = 0
     weak var bus: Bus?
-    
+
     var pulse1 = PulseChannel(channel: 1)
     var pulse2 = PulseChannel(channel: 2)
     var triangle = TriangleChannel()
     var noise = NoiseChannel()
     var dmc = DMCChannel()
-    
+
     private var cpuCycle: UInt64 = 0
-    
+
     private var halfRateToggle: Bool = false
     private var frameCycle: UInt32 = 0
     private var frameMode5Step: Bool = false
     private var frameIRQInhibit: Bool = false
     private var frameIRQFlag: Bool = false
     private var pendingFrameIRQ: Bool = false
-    
+
     var irqPending: Bool = false
-    
+
     private var pending4017write: Int = -1
     private var pending4017value: UInt8 = 0
-    
+
     private var pulseTable = [Float](repeating: 0, count: 31)
     private var tndTable = [Float](repeating: 0, count: 203)
 
-    // Low-Pass Filter (LPF) properties
     private var lpY: Float = 0.0
     private var lpAlpha: Float = 0.0
-    
-    // High-Pass Filter (DC Removal) Properties
+
     private var hpY: Float = 0.0
     private var hpX: Float = 0.0
     private var hpAlpha: Float = 0.0
-    
+
     init() {
-        // Build mixing lookup tables.
-        // index 0 should be zero to avoid division-by-zero.
         pulseTable[0] = 0.0
         for i in 1..<31 {
-            // i is the combined pulse amplitude (1..30)
             pulseTable[i] = 95.52 / (8128.0 / Float(i) + 100.0)
         }
         tndTable[0] = 0.0
         for i in 1..<203 {
-            // i is the combined TND amplitude (1..202)
             tndTable[i] = 163.67 / (24329.0 / Float(i) + 100.0)
         }
-        
+
         pulse1.apu = self
         pulse2.apu = self
         triangle.apu = self
         noise.apu = self
         dmc.apu = self
-        
-        // LPF Alpha (High Frequency Removal)
+
         let fcLP: Float = 12000.0
         let fs: Float = 44100.0
         let aLP = 1.0 - exp(-2.0 * Float.pi * fcLP / fs)
         self.lpAlpha = aLP
-        
-        // HPF Alpha (DC Removal)
+
         let fcHP: Float = 90.0
         let dt = 1.0 / fs
         let RC = 1.0 / (2.0 * Float.pi * fcHP)
         self.hpAlpha = RC / (RC + dt)
     }
-    
+
     func reset() {
         pulse1.reset()
         pulse2.reset()
         triangle.reset()
         noise.reset()
         dmc.reset()
-        
+
         frameIRQFlag = false
         pendingFrameIRQ = false
         irqPending = false
@@ -87,15 +78,12 @@ class APU {
         frameIRQInhibit = false
         pending4017write = -1
         pending4017value = 0
-        
+
         lpY = 0.0
         hpY = 0.0
         hpX = 0.0
     }
-    
-    // ---
-    // --- FIX: Renamed 'read' to 'readStatus' ---
-    // ---
+
     @inline(__always) func readStatus() -> UInt8 {
         var val: UInt8 = 0
         if pulse1.lengthCounter > 0 { val |= 0x01 }
@@ -103,22 +91,17 @@ class APU {
         if triangle.lengthCounter > 0 { val |= 0x04 }
         if noise.lengthCounter > 0 { val |= 0x08 }
         if dmc.bytesRemaining > 0 { val |= 0x10 }
-        
+
         if frameIRQFlag { val |= 0x40 }
         if dmc.irqFlag   { val |= 0x80 }
-        
-        // Compute irqPending BEFORE we clear frameIRQFlag (reading $4015/$4017 clears the flag on real hardware).
+
         irqPending = ((!frameIRQInhibit && frameIRQFlag) || dmc.irqFlag)
-        
-        // Clear the frame IRQ flag as the CPU read of $4015 does on hardware
+
         frameIRQFlag = false
-        
+
         return val
     }
-    
-    // ---
-    // --- FIX: Renamed 'write' to 'cpuWrite' ---
-    // ---
+
     @inline(__always) func cpuWrite(address: UInt16, value: UInt8) {
         switch address {
         case 0x4000: pulse1.write(reg: 0, value: value)
@@ -145,12 +128,12 @@ class APU {
             triangle.enabled = (value & 0x04) != 0
             noise.enabled   = (value & 0x08) != 0
             dmc.enabled     = (value & 0x10) != 0
-            
+
             if !pulse1.enabled  { pulse1.lengthCounter  = 0 }
             if !pulse2.enabled  { pulse2.lengthCounter  = 0 }
             if !triangle.enabled { triangle.lengthCounter = 0 }
             if !noise.enabled   { noise.lengthCounter   = 0 }
-            
+
             if !dmc.enabled {
                 dmc.bytesRemaining = 0
             } else if dmc.bytesRemaining == 0 {
@@ -158,52 +141,50 @@ class APU {
             }
             dmc.irqFlag = false
             irqPending = ((!frameIRQInhibit && frameIRQFlag) || dmc.irqFlag)
-            
+
         case 0x4017:
-            // Write is delayed relative to CPU cycle: store and apply in tick().
             pending4017value = value
-            // Use 2 or 3 ticks delay depending on cpuCycle parity (this matches your original logic).
             pending4017write = (cpuCycle % 2 == 0) ? 2 : 3
-            
+
         default:
             break
         }
     }
-    
+
     private func apply4017Write(_ value: UInt8) {
         frameMode5Step   = (value & 0x80) != 0
         frameIRQInhibit  = (value & 0x40) != 0
         if frameIRQInhibit { frameIRQFlag = false }
-        
+
         frameCycle = 0
         halfRateToggle = false
-        
+
         if frameMode5Step {
             clockQuarterFrame()
             clockHalfFrame()
         }
         irqPending = ((!frameIRQInhibit && frameIRQFlag) || dmc.irqFlag)
     }
-    
+
     func tick() {
         cpuCycle &+= 1
-        
+
         if pending4017write > 0 {
             pending4017write -= 1
             if pending4017write == 0 {
                 apply4017Write(pending4017value)
             }
         }
-        
+
         triangle.clockTimer()
-        
+
         halfRateToggle.toggle()
         if halfRateToggle {
             pulse1.clockTimer()
             pulse2.clockTimer()
             noise.clockTimer()
             dmc.clockTimer()
-            
+
             if !frameMode5Step {
                 switch frameCycle {
                 case 3728:
@@ -238,63 +219,60 @@ class APU {
             }
 
             frameCycle &+= 1
-            
+
             if !frameMode5Step {
                 if frameCycle == 14915 { frameCycle = 0 }
             } else {
                 if frameCycle == 18641 { frameCycle = 0 }
             }
         }
-        
+
         if pendingFrameIRQ {
             frameIRQFlag = true
             pendingFrameIRQ = false
         }
         irqPending = ((!frameIRQInhibit && frameIRQFlag) || dmc.irqFlag)
     }
-    
+
     private func clockQuarterFrame() {
         pulse1.clockEnvelope()
         pulse2.clockEnvelope()
         triangle.clockLinear()
         noise.clockEnvelope()
     }
-    
+
     private func clockHalfFrame() {
         pulse1.clockLength(); pulse1.clockSweep()
         pulse2.clockLength(); pulse2.clockSweep()
         triangle.clockLength()
         noise.clockLength()
     }
-    
+
     func outputSample() -> Float {
         let p1  = Float(pulse1.output)
         let p2  = Float(pulse2.output)
         let tri = Float(triangle.output)
         let noi = Float(noise.output)
         let dm  = Float(dmc.output)
-        
-        // Clamp sums into valid table index ranges
+
         let pulseSumRaw = Int(p1 + p2)
-        let pulseSum = min(max(pulseSumRaw, 0), 30) // 0..30
-        
+        let pulseSum = min(max(pulseSumRaw, 0), 30)
+
         let tndSumRaw = Int(3 * tri + 2 * noi + dm)
-        let tndSum = min(max(tndSumRaw, 0), 202) // 0..202
-        
+        let tndSum = min(max(tndSumRaw, 0), 202)
+
         let mixed = pulseTable[pulseSum] + tndTable[tndSum]
-        
-        // 1. Low-Pass Filter (Aliasing/Treble Removal)
+
         let lpOut = lpY + lpAlpha * (mixed - lpY)
         lpY = lpOut
-        
-        // 2. High-Pass Filter (DC Removal)
+
         let hpOut = hpAlpha * (hpY + lpOut - hpX)
         hpX = lpOut
         hpY = hpOut
-        
+
         return hpOut
     }
-    
+
     func consumeDMCStallCycles() -> Int {
         let cycles = dmcStallCycles
         dmcStallCycles = 0

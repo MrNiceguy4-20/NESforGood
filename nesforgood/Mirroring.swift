@@ -73,7 +73,7 @@ final class Cartridge {
             let filename = "nes_save_\(Cartridge.quickHash(self.prgROM)).sav"
             let url = docs.appendingPathComponent(filename)
             self.saveURL = url
-            
+
             if let data = try? Data(contentsOf: url), data.count == ram.size {
                 data.withUnsafeBytes { (loadedBytes: UnsafeRawBufferPointer) in
                     if let baseAddress = loadedBytes.baseAddress {
@@ -95,6 +95,7 @@ final class Cartridge {
         case 9: self.mapper = MMC2Mapper(prgROM: prgROM, chr: chr, prgRAM: prgRAM, mirroring: mirroring)
         case 10: self.mapper = MMC4Mapper(prgROM: prgROM, chr: chr, prgRAM: prgRAM, mirroring: mirroring)
         case 11: self.mapper = ColorDreamsMapper(prgROM: prgROM, chr: chr, prgRAM: prgRAM, mirroring: mirroring)
+        case 30: self.mapper = Mapper30(prgROM: prgROM, chr: chr, prgRAM: prgRAM, mirroring: mirroring) // NEW: UNROM-512
         case 66: self.mapper = GNROMMapper(prgROM: prgROM, chr: chr, prgRAM: prgRAM, mirroring: mirroring)
         case 71: self.mapper = Mapper71(prgROM: prgROM, chr: chr, prgRAM: prgRAM, mirroring: mirroring)
         default: throw CartridgeError.unsupportedMapper(mapperID)

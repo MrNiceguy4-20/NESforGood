@@ -76,7 +76,7 @@ final class Coordinator: NSObject, MTKViewDelegate {
     private var vb: MTLBuffer?
     private var ub: MTLBuffer?
     private var srcTexture: MTLTexture?
-    
+
     var scaleMode: ScaleMode = .integer
     var shaderMode: ShaderMode = .none
     var gamma: Float = 1.0
@@ -116,17 +116,15 @@ final class Coordinator: NSObject, MTKViewDelegate {
 
         view.delegate = self
     }
-    
-    func draw(in view: MTKView) {
-        // No manual dispatch or queueing here. The system calls this.
 
+    func draw(in view: MTKView) {
         let currentCartridgeID = emulator.cartridge.map { ObjectIdentifier($0) }
-        
+
         if lastCartridgeID != currentCartridgeID {
             srcTexture = nil
             lastCartridgeID = currentCartridgeID
         }
-        
+
         guard emulator.isRunning,
               let drawable = view.currentDrawable,
               let passDesc = view.currentRenderPassDescriptor,
@@ -139,13 +137,11 @@ final class Coordinator: NSObject, MTKViewDelegate {
             if now - lastTime < target { return }
             lastTime = now
         }
-        
+
         if let ppu = emulator.ppu {
             if srcTexture == nil {
                 srcTexture = ppu.makeTexture(device: device)
             } else if let tex = srcTexture {
-                // This call is protected by the PPU's lock, which will
-                // not block the Emulator Thread due to the trylock.
                 ppu.copyFrame(to: tex)
             }
         }
