@@ -15,7 +15,12 @@ final class UxROMMapper: Mapper {
         if (0x6000...0x7FFF).contains(address) {
             prgRAM?.data[Int(address - 0x6000)] = value
         } else if address >= 0x8000 {
-            prgBank = value & 0x1F
+            // ---
+            // --- THIS IS THE FIX ---
+            // ---
+            // Mapper 2 (UNROM) only uses the lower 4 bits for bank switching
+            // not 5.
+            prgBank = value & 0x0F
         }
     }
 
@@ -24,10 +29,12 @@ final class UxROMMapper: Mapper {
         case 0x6000...0x7FFF:
             return prgRAM?.data[Int(address - 0x6000)] ?? 0
         case 0x8000...0xBFFF:
+            // This logic is correct: it selects a 16K bank.
             let bankCount = max(1, prgROM.count / 0x4000)
             let base = Int(prgBank % UInt8(bankCount)) * 0x4000
             return prgROM[base + Int(address & 0x3FFF)]
         case 0xC000...0xFFFF:
+            // This logic is correct: it selects the *last* 16K bank.
             let base = prgROM.count - 0x4000
             return prgROM[base + Int(address & 0x3FFF)]
         default:

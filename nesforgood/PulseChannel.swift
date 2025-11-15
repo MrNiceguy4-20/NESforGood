@@ -38,6 +38,19 @@ class PulseChannel {
     
     init(channel: Int) { self.channel = channel }
     
+    func reset() {
+        enabled = false
+        lengthCounter = 0
+        sequencer = 0
+        timer = 0
+        period = 0
+        envelopeStart = false
+        decayLevel = 0
+        sweepEnable = false
+        sweepReload = false
+        sweepDivider = 0
+    }
+    
     func write(reg: UInt8, value: UInt8) {
         switch reg {
         case 0:

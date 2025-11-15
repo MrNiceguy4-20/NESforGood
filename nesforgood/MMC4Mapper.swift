@@ -16,13 +16,17 @@ final class MMC4Mapper: Mapper {
         self.chr = chr
         self.prgRAM = prgRAM
         self.mirroring = mirroring
-        self.prgBank = 0
-        self.chrFD0 = 0
-        self.chrFE0 = 0
-        self.chrFD1 = 0
-        self.chrFE1 = 0
-        self.latch0 = 0xFD
-        self.latch1 = 0xFD
+        reset()
+    }
+    
+    func reset() {
+        prgBank = 0
+        chrFD0 = 0
+        chrFE0 = 0
+        chrFD1 = 0
+        chrFE1 = 0
+        latch0 = 0xFD // Reset latches to initial state (Phase 7 fix)
+        latch1 = 0xFD // Reset latches to initial state (Phase 7 fix)
     }
 
     func cpuWrite(address: UInt16, value: UInt8) {

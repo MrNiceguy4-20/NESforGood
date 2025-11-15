@@ -73,8 +73,14 @@ final class Cartridge {
             let filename = "nes_save_\(Cartridge.quickHash(self.prgROM)).sav"
             let url = docs.appendingPathComponent(filename)
             self.saveURL = url
-            if let data = try? Data(contentsOf: url), data.count == ram.data.count {
-                ram.data = [UInt8](data)
+            
+            if let data = try? Data(contentsOf: url), data.count == ram.size {
+                data.withUnsafeBytes { (loadedBytes: UnsafeRawBufferPointer) in
+                    if let baseAddress = loadedBytes.baseAddress {
+                        let ramRawPtr = UnsafeMutableRawPointer(ram.data)
+                        ramRawPtr.copyMemory(from: baseAddress, byteCount: data.count)
+                    }
+                }
             }
         }
 
@@ -97,7 +103,8 @@ final class Cartridge {
 
     func saveBatteryRAM() {
         guard hasBattery, let ram = prgRAM, let url = saveURL else { return }
-        try? Data(ram.data).write(to: url, options: [.atomic])
+        let buffer = UnsafeBufferPointer(start: ram.data, count: ram.size)
+        try? Data(buffer).write(to: url, options: [.atomic])
     }
 
     private static func quickHash(_ bytes: [UInt8]) -> String {
@@ -118,10 +125,18 @@ protocol Mapper: AnyObject {
     func ppuA12Observe(addr: UInt16, ppuDot: UInt64)
     func mapperIRQAsserted() -> Bool
     func mapperIRQClear()
+    // ---
+    // --- FIX: Add missing required method to the protocol ---
+    // ---
+    func clockScanlineCounter()
 }
 
 extension Mapper {
     func ppuA12Observe(addr: UInt16, ppuDot: UInt64) {}
     func mapperIRQAsserted() -> Bool { return false }
     func mapperIRQClear() {}
+    // ---
+    // --- FIX: Provide default implementation for non-MMC3 mappers ---
+    // ---
+    func clockScanlineCounter() {}
 }

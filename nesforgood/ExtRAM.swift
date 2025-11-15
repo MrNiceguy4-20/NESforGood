@@ -1,6 +1,19 @@
 final class ExtRAM {
-    var data: [UInt8]
+    // ---
+    // --- OPTIMIZATION: Replaced [UInt8] with UnsafeMutablePointer ---
+    // ---
+    var data: UnsafeMutablePointer<UInt8>
+    let size: Int
+
     init(size: Int) {
-        self.data = [UInt8](repeating: 0, count: max(size, 8 * 1024))
+        let allocSize = max(size, 8 * 1024)
+        self.size = allocSize
+        self.data = .allocate(capacity: allocSize)
+        self.data.initialize(repeating: 0, count: allocSize)
+    }
+    
+    deinit {
+        data.deinitialize(count: size)
+        data.deallocate()
     }
 }

@@ -17,6 +17,15 @@ class TriangleChannel {
     
     static let lengthTable = PulseChannel.lengthTable
     
+    func reset() {
+        enabled = false
+        lengthCounter = 0
+        sequencer = 0
+        timer = 0
+        period = 0
+        linearCounter = 0
+    }
+    
     func write(reg: UInt8, value: UInt8) {
         switch reg {
         case 0:

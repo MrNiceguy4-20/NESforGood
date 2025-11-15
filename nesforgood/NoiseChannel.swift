@@ -19,6 +19,15 @@ class NoiseChannel {
     
     static let lengthTable = PulseChannel.lengthTable
     
+    func reset() {
+        enabled = false
+        lengthCounter = 0
+        timer = 0
+        shiftRegister = 1
+        envelopeStart = false
+        decayLevel = 0
+    }
+    
     func write(reg: UInt8, value: UInt8) {
         switch reg {
         case 0:

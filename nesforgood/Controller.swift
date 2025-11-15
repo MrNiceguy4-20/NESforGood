@@ -83,12 +83,12 @@ final class Controller {
             self?.buttonStates[.start] = pressed
         }
 
-        controller.controllerPausedHandler = { [weak self] _ in
-            self?.buttonStates[.start] = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                self?.buttonStates[.start] = false
-            }
+        // --- THIS IS THE FIX ---
+        // Replaced the deprecated controllerPausedHandler with the modern buttonMenu handler
+        gamepad.buttonMenu.valueChangedHandler = { [weak self] _, _, pressed in
+            self?.buttonStates[.start] = pressed
         }
+        // -----------------------
     }
 
     func write(value: UInt8) {

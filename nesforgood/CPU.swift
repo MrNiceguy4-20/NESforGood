@@ -6,16 +6,22 @@ final class CPU {
     var Y: UInt8 = 0
     var SP: UInt8 = 0xFD
     var PC: UInt16 = 0
-    var P: UInt8 = 0x24
+    var P: UInt8 = 0x24 // Processor Status Register
 
     private let bus: Bus
 
     var cycles: UInt64 = 0
-
     private var stallIRQThisInstruction = false
+    
+    // ---
+    // --- OPTIMIZATION: The Opcode Table ---
+    // ---
+    private var opcodeTable: [() -> Int] = []
 
     init(bus: Bus) {
         self.bus = bus
+        // Build the table *after* self is available
+        self.opcodeTable = self.buildOpcodeTable()
         reset()
     }
 
@@ -27,6 +33,8 @@ final class CPU {
         stallIRQThisInstruction = false
     }
 
+    // MARK: - Memory Access
+    
     @inline(__always) private func read(address: UInt16) -> UInt8 {
         bus.cpuRead(address: address)
     }
@@ -35,100 +43,198 @@ final class CPU {
         bus.cpuWrite(address: address, value: value)
     }
 
-    private func readWord(address: UInt16) -> UInt16 {
+    @inline(__always) private func readWord(address: UInt16) -> UInt16 {
         let lo = UInt16(read(address: address))
         let hi = UInt16(read(address: address &+ 1)) << 8
         return hi | lo
     }
 
+    // MARK: - Flags
+    
     enum Flag: UInt8 {
-        case C = 0b00000001, Z = 0b00000010, I = 0b00000100, D = 0b00001000
-        case B = 0b00010000, U = 0b00100000, V = 0b01000000, N = 0b10000000
+        case C = 0b00000001 // Carry
+        case Z = 0b00000010 // Zero
+        case I = 0b00000100 // Interrupt Disable
+        case D = 0b00001000 // Decimal Mode
+        case B = 0b00010000 // Break
+        case U = 0b00100000 // Unused (always 1)
+        case V = 0b01000000 // Overflow
+        case N = 0b10000000 // Negative
     }
 
-    private func setFlag(_ f: Flag, _ on: Bool) {
+    @inline(__always) private func setFlag(_ f: Flag, _ on: Bool) {
         if on { P |= f.rawValue } else { P &= ~f.rawValue }
     }
-    private func getFlag(_ f: Flag) -> Bool { (P & f.rawValue) != 0 }
-    private func setZN(_ v: UInt8) { setFlag(.Z, v == 0); setFlag(.N, (v & 0x80) != 0) }
+    
+    @inline(__always) private func getFlag(_ f: Flag) -> Bool { (P & f.rawValue) != 0 }
+    
+    @inline(__always) private func setZN(_ v: UInt8) {
+        setFlag(.Z, v == 0)
+        setFlag(.N, (v & 0x80) != 0)
+    }
 
-    private func push(_ v: UInt8) { write(address: 0x0100 | UInt16(SP), value: v); SP &-= 1 }
-    private func pop() -> UInt8 { SP &+= 1; return read(address: 0x0100 | UInt16(SP)) }
-    private func pushWord(_ w: UInt16) { push(UInt8((w >> 8) & 0xFF)); push(UInt8(w & 0xFF)) }
-    private func popWord() -> UInt16 { let lo = UInt16(pop()); let hi = UInt16(pop()) << 8; return hi | lo }
+    // MARK: - Stack Operations
+    
+    @inline(__always) private func push(_ v: UInt8) {
+        write(address: 0x0100 | UInt16(SP), value: v)
+        SP &-= 1
+    }
 
-    private func immediate() -> UInt8 { let v = read(address: PC); PC &+= 1; return v }
-    private func zeroPage() -> UInt16 { let a = UInt16(read(address: PC)); PC &+= 1; return a }
-    private func zeroPageX() -> UInt16 { let b = read(address: PC); PC &+= 1; return UInt16((b &+ X) & 0xFF) }
-    private func zeroPageY() -> UInt16 { let b = read(address: PC); PC &+= 1; return UInt16((b &+ Y) & 0xFF) }
-    private func absolute() -> UInt16 { let a = readWord(address: PC); PC &+= 2; return a }
-    private func absoluteX() -> (UInt16, Bool) {
-        let base = readWord(address: PC); PC &+= 2
+    @inline(__always) private func pop() -> UInt8 {
+        SP &+= 1
+        return read(address: 0x0100 | UInt16(SP))
+    }
+
+    @inline(__always) private func pushWord(_ w: UInt16) {
+        push(UInt8((w >> 8) & 0xFF))
+        push(UInt8(w & 0xFF))
+    }
+
+    @inline(__always) private func popWord() -> UInt16 {
+        let lo = UInt16(pop())
+        let hi = UInt16(pop()) << 8
+        return hi | lo
+    }
+
+    // MARK: - Addressing Modes
+    // (These are now inlined into the table, but we keep
+    //  them here for the ALU functions that are shared)
+    
+    @inline(__always) private func immediate() -> UInt8 {
+        let v = read(address: PC)
+        PC &+= 1
+        return v
+    }
+    
+    @inline(__always) private func zeroPage() -> UInt16 {
+        let a = UInt16(read(address: PC))
+        PC &+= 1
+        return a
+    }
+    
+    @inline(__always) private func zeroPageX() -> UInt16 {
+        let b = read(address: PC)
+        PC &+= 1
+        return UInt16((b &+ X) & 0xFF)
+    }
+    
+    @inline(__always) private func zeroPageY() -> UInt16 {
+        let b = read(address: PC)
+        PC &+= 1
+        return UInt16((b &+ Y) & 0xFF)
+    }
+    
+    @inline(__always) private func absolute() -> UInt16 {
+        let a = readWord(address: PC)
+        PC &+= 2
+        return a
+    }
+    
+    @inline(__always) private func absoluteX() -> (UInt16, Bool) {
+        let base = readWord(address: PC)
+        PC &+= 2
         let addr = base &+ UInt16(X)
-        return (addr, (addr & 0xFF00) != (base & 0xFF00))
+        let pageCross = (addr & 0xFF00) != (base & 0xFF00)
+        return (addr, pageCross)
     }
-    private func absoluteY() -> (UInt16, Bool) {
-        let base = readWord(address: PC); PC &+= 2
+    
+    @inline(__always) private func absoluteY() -> (UInt16, Bool) {
+        let base = readWord(address: PC)
+        PC &+= 2
         let addr = base &+ UInt16(Y)
-        return (addr, (addr & 0xFF00) != (base & 0xFF00))
+        let pageCross = (addr & 0xFF00) != (base & 0xFF00)
+        return (addr, pageCross)
     }
-    private func indirect() -> UInt16 {
-        let ptr = readWord(address: PC); PC &+= 2
+    
+    @inline(__always) private func indirect() -> UInt16 {
+        let ptr = readWord(address: PC)
+        PC &+= 2
+        
         let loAddr = ptr
         let hiAddr = (ptr & 0xFF00) | UInt16(UInt8((ptr & 0x00FF) &+ 1))
+        
         let lo = UInt16(read(address: loAddr))
         let hi = UInt16(read(address: hiAddr)) << 8
         return hi | lo
     }
-    private func indirectX() -> UInt16 {
-        let zp = (read(address: PC) &+ X) & 0xFF; PC &+= 1
+    
+    @inline(__always) private func indirectX() -> UInt16 {
+        let zp = (read(address: PC) &+ X) & 0xFF
+        PC &+= 1
         let lo = UInt16(read(address: UInt16(zp)))
         let hi = UInt16(read(address: UInt16((zp &+ 1) & 0xFF))) << 8
         return hi | lo
     }
-    private func indirectY() -> (UInt16, Bool) {
-        let zp = read(address: PC); PC &+= 1
+    
+    @inline(__always) private func indirectY() -> (UInt16, Bool) {
+        let zp = read(address: PC)
+        PC &+= 1
         let lo = UInt16(read(address: UInt16(zp)))
         let hi = UInt16(read(address: UInt16((zp &+ 1) & 0xFF))) << 8
         let base = hi | lo
         let addr = base &+ UInt16(Y)
-        return (addr, (addr & 0xFF00) != (base & 0xFF00))
+        let pageCross = (addr & 0xFF00) != (base & 0xFF00)
+        return (addr, pageCross)
     }
-    private func relative() -> (UInt16, Bool) {
-        let off = Int8(bitPattern: read(address: PC)); PC &+= 1
+    
+    @inline(__always) private func relative() -> (UInt16, Bool) {
+        let off = Int8(bitPattern: read(address: PC))
+        PC &+= 1
         let base = PC
-        let target = UInt16(Int(base) &+ Int(off))
-        return (target, (base & 0xFF00) != (target & 0xFF00))
+        let target = UInt16(bitPattern: Int16(bitPattern: base) &+ Int16(off))
+        let pageCross = (base & 0xFF00) != (target & 0xFF00)
+        return (target, pageCross)
     }
 
-    private func adc(_ v: UInt8) {
+    // MARK: - Legal Instructions (ALU)
+    // (These are kept as they are complex and shared)
+
+    @inline(__always) private func adc(_ v: UInt8) {
         let c: UInt16 = getFlag(.C) ? 1 : 0
         let s = UInt16(A) &+ UInt16(v) &+ c
         let r = UInt8(truncatingIfNeeded: s)
         setFlag(.C, s > 0xFF)
         setFlag(.V, (~(A ^ v) & (A ^ r) & 0x80) != 0)
-        A = r; setZN(A)
+        A = r
+        setZN(A)
     }
-    private func sbc(_ v: UInt8) { adc(~v) }
+    
+    @inline(__always) private func sbc(_ v: UInt8) {
+        adc(~v)
+    }
 
-    private func and(_ v: UInt8) { A &= v; setZN(A) }
-    private func ora(_ v: UInt8) { A |= v; setZN(A) }
-    private func eor(_ v: UInt8) { A ^= v; setZN(A) }
-    private func cmp(_ r: UInt8, _ v: UInt8) { let t = r &- v; setFlag(.C, r >= v); setZN(t) }
+    @inline(__always) private func and(_ v: UInt8) { A &= v; setZN(A) }
+    @inline(__always) private func ora(_ v: UInt8) { A |= v; setZN(A) }
+    @inline(__always) private func eor(_ v: UInt8) { A ^= v; setZN(A) }
+    
+    @inline(__always) private func cmp(_ r: UInt8, _ v: UInt8) {
+        let t = r &- v
+        setFlag(.C, r >= v)
+        setZN(t)
+    }
 
-    private func aslA() { setFlag(.C, (A & 0x80) != 0); A &<<= 1; setZN(A) }
-    private func lsrA() { setFlag(.C, (A & 0x01) != 0); A &>>= 1; setFlag(.N, false); setFlag(.Z, A == 0) }
-    private func rolA() { let c = getFlag(.C) ? 1 : 0; let newC = (A & 0x80) != 0; A = (A &<< 1) | UInt8(c); setFlag(.C, newC); setZN(A) }
-    private func rorA() { let c = getFlag(.C) ? 0x80 : 0; let newC = (A & 0x01) != 0; A = (A &>> 1) | UInt8(c); setFlag(.C, newC); setZN(A) }
+    // MARK: - Legal Instructions (Read-Modify-Write)
+    
+    @inline(__always) private func aslA() { setFlag(.C, (A & 0x80) != 0); A &<<= 1; setZN(A) }
+    @inline(__always) private func lsrA() { setFlag(.C, (A & 0x01) != 0); A &>>= 1; setFlag(.N, false); setFlag(.Z, A == 0) }
+    @inline(__always) private func rolA() { let c: UInt8 = getFlag(.C) ? 1 : 0; let newC = (A & 0x80) != 0; A = (A &<< 1) | c; setFlag(.C, newC); setZN(A) }
+    @inline(__always) private func rorA() { let c: UInt8 = getFlag(.C) ? 0x80 : 0; let newC = (A & 0x01) != 0; A = (A &>> 1) | c; setFlag(.C, newC); setZN(A) }
 
-    private func aslM(_ a: UInt16) { var v = read(address: a); setFlag(.C, (v & 0x80) != 0); v &<<= 1; write(address: a, value: v); setZN(v) }
-    private func lsrM(_ a: UInt16) { var v = read(address: a); setFlag(.C, (v & 0x01) != 0); v &>>= 1; write(address: a, value: v); setFlag(.N, false); setFlag(.Z, v == 0) }
-    private func rolM(_ a: UInt16) { var v = read(address: a); let cin: UInt8 = getFlag(.C) ? 1 : 0; let newC = (v & 0x80) != 0; v = (v &<< 1) | cin; write(address: a, value: v); setFlag(.C, newC); setZN(v) }
-    private func rorM(_ a: UInt16) { var v = read(address: a); let cin: UInt8 = getFlag(.C) ? 0x80 : 0; let newC = (v & 0x01) != 0; v = (v &>> 1) | cin; write(address: a, value: v); setFlag(.C, newC); setZN(v) }
+    @inline(__always) private func aslM(_ a: UInt16) { var v = read(address: a); setFlag(.C, (v & 0x80) != 0); v &<<= 1; write(address: a, value: v); setZN(v) }
+    @inline(__always) private func lsrM(_ a: UInt16) { var v = read(address: a); setFlag(.C, (v & 0x01) != 0); v &>>= 1; write(address: a, value: v); setFlag(.N, false); setFlag(.Z, v == 0) }
+    @inline(__always) private func rolM(_ a: UInt16) { var v = read(address: a); let cin: UInt8 = getFlag(.C) ? 1 : 0; let newC = (v & 0x80) != 0; v = (v &<< 1) | cin; write(address: a, value: v); setFlag(.C, newC); setZN(v) }
+    @inline(__always) private func rorM(_ a: UInt16) { var v = read(address: a); let cin: UInt8 = getFlag(.C) ? 0x80 : 0; let newC = (v & 0x01) != 0; v = (v &>> 1) | cin; write(address: a, value: v); setFlag(.C, newC); setZN(v) }
+    
+    @inline(__always) private func incM(_ a: UInt16) { var v = read(address: a); v &+= 1; write(address: a, value: v); setZN(v) }
+    @inline(__always) private func decM(_ a: UInt16) { var v = read(address: a); v &-= 1; write(address: a, value: v); setZN(v) }
+
+    // MARK: - Interrupts & Control Flow
 
     func nmi() {
         pushWord(PC)
-        var f = P; f &= ~Flag.B.rawValue; f |= Flag.U.rawValue
+        var f = P
+        f &= ~Flag.B.rawValue
+        f |= Flag.U.rawValue
         push(f)
         setFlag(.I, true)
         stallIRQThisInstruction = true
@@ -138,7 +244,9 @@ final class CPU {
     func irq() {
         if getFlag(.I) { return }
         pushWord(PC)
-        var f = P; f &= ~Flag.B.rawValue; f |= Flag.U.rawValue
+        var f = P
+        f &= ~Flag.B.rawValue
+        f |= Flag.U.rawValue
         push(f)
         setFlag(.I, true)
         stallIRQThisInstruction = true
@@ -157,654 +265,387 @@ final class CPU {
 
     private func rti() {
         var f = pop()
-        f |= Flag.U.rawValue; f &= ~Flag.B.rawValue
+        f |= Flag.U.rawValue
+        f &= ~Flag.B.rawValue
         P = f
         PC = popWord()
     }
-
-    private func opSLO(_ addr: UInt16) { var v = read(address: addr); setFlag(.C, (v & 0x80) != 0); v &<<= 1; write(address: addr, value: v); ora(v) }
-    private func opRLA(_ addr: UInt16) { var v = read(address: addr); let cin: UInt8 = getFlag(.C) ? 1 : 0; let newC = (v & 0x80) != 0; v = (v &<< 1) | cin; write(address: addr, value: v); setFlag(.C, newC); and(v) }
-    private func opSRE(_ addr: UInt16) { var v = read(address: addr); setFlag(.C, (v & 0x01) != 0); v &>>= 1; write(address: addr, value: v); eor(v) }
-    private func opRRA(_ addr: UInt16) { var v = read(address: addr); let cin: UInt8 = getFlag(.C) ? 0x80 : 0; let newC = (v & 0x01) != 0; v = (v &>> 1) | cin; write(address: addr, value: v); setFlag(.C, newC); adc(v) }
-    private func opDCP(_ addr: UInt16) { var v = read(address: addr); v &-= 1; write(address: addr, value: v); cmp(A, v) }
-    private func opISC(_ addr: UInt16) { var v = read(address: addr); v &+= 1; write(address: addr, value: v); sbc(v) }
-    private func opLAX(_ v: UInt8) { A = v; X = v; setZN(v) }
-    private func opSAX(_ addr: UInt16) { write(address: addr, value: A & X) }
-    private func opANC(_ imm: UInt8) { and(imm); setFlag(.C, (A & 0x80) != 0) }
-    private func opALR(_ imm: UInt8) { and(imm); lsrA() }
-    private func opARR(_ imm: UInt8) {
-        and(imm)
-        let carryIn: UInt8 = getFlag(.C) ? 0x80 : 0
-        let old = A
-        let newC = (A & 0x01) != 0
-        A = (A &>> 1) | carryIn
-        setZN(A)
-        let b5 = (A >> 5) & 1
-        let b6 = (A >> 6) & 1
-        setFlag(.V, (b5 ^ b6) != 0)
-        setFlag(.C, (old & 0x40) != 0)
+    
+    // ---
+    // --- KIL/JAM (default illegal opcode) ---
+    // ---
+    @inline(__always) private func opKIL() -> Int {
+        PC &-= 1 // Loop on self
+        return 2 // KIL is typically 2 cycles
     }
-    private func opAXS(_ imm: UInt8) { let t = (A & X); let r = t &- imm; setFlag(.C, t >= imm); X = r; setZN(X) }
-    private func opLAS(_ addr: UInt16) { let v = read(address: addr) & SP; SP = v; A = v; X = v; setZN(v) }
-    private func opTAS(storeAddr: UInt16, effectiveBase: UInt16) { let hiPlus1 = UInt8(((effectiveBase >> 8) & 0xFF) &+ 1); SP = A & X; let v = SP & hiPlus1; write(address: storeAddr, value: v) }
-    private func opAHX(storeAddr: UInt16, effectiveBase: UInt16) { let v = (A & X) & UInt8(((effectiveBase >> 8) & 0xFF) &+ 1); write(address: storeAddr, value: v) }
-    private func opSHY(storeAddr: UInt16, effectiveBase: UInt16) { let v = Y & UInt8(((effectiveBase >> 8) & 0xFF) &+ 1); write(address: storeAddr, value: v) }
-    private func opSHX(storeAddr: UInt16, effectiveBase: UInt16) { let v = X & UInt8(((effectiveBase >> 8) & 0xFF) &+ 1); write(address: storeAddr, value: v) }
 
+    // MARK: - CPU Step
+    
     @discardableResult
     func step() -> Int {
+        
         if let core = bus.core, core.dmaActive {
             if core.dmaCyclesLeft > 0 {
-                core.dmaCyclesLeft &-= 1
-                cycles &+= 1
-                if core.dmaCyclesLeft == 0 {
-                    core.dmaActive = false
-                }
-                return 1
+                return 1 // DMA steals the cycle, but we don't increment CPU.cycles
             }
         }
-let opcode = read(address: PC)
-        PC &+= 1
-        var c = 0
-
-        switch opcode {
-            case 0xEB:
-                let value = immediate()
-                sbc(value)
-return 2
-            case 0xFC:
-                execIllegalNOP(2)
-return 2
-            case 0xDC:
-                execIllegalNOP(2)
-return 2
-            case 0x7C:
-                execIllegalNOP(2)
-return 2
-            case 0x5C:
-                execIllegalNOP(2)
-return 2
-            case 0x3C:
-                execIllegalNOP(2)
-return 2
-            case 0xF4:
-                execIllegalNOP(1)
-return 2
-            case 0xD4:
-                execIllegalNOP(1)
-return 2
-            case 0x74:
-                execIllegalNOP(1)
-return 2
-            case 0x54:
-                execIllegalNOP(1)
-return 2
-            case 0x34:
-                execIllegalNOP(1)
-return 2
-            case 0x64:
-                execIllegalNOP(1)
-return 2
-            case 0x44:
-                execIllegalNOP(1)
-return 2
-            case 0xE2:
-                execIllegalNOP(1)
-return 2
-            case 0xC2:
-                execIllegalNOP(1)
-return 2
-            case 0x89:
-                execIllegalNOP(1)
-return 2
-            case 0x82:
-                execIllegalNOP(1)
-return 2
-            case 0xFA:
-return 2
-            case 0xDA:
-return 2
-            case 0x7A:
-return 2
-            case 0x5A:
-return 2
-            case 0x3A:
-return 2
-        case 0xA9:
-            c = 2; A = immediate(); setZN(A)
-        case 0xA5:
-            c = 3; A = read(address: zeroPage()); setZN(A)
-        case 0xB5:
-            c = 4; A = read(address: zeroPageX()); setZN(A)
-        case 0xAD:
-            c = 4; A = read(address: absolute()); setZN(A)
-        case 0xBD:
-            let (aBD, xpBD) = absoluteX()
-            c = 4 + (xpBD ? 1 : 0)
-            A = read(address: aBD); setZN(A)
-        case 0xB9:
-            let (aB9, ypB9) = absoluteY()
-            c = 4 + (ypB9 ? 1 : 0)
-            A = read(address: aB9); setZN(A)
-        case 0xA1:
-            c = 6; A = read(address: indirectX()); setZN(A)
-        case 0xB1:
-            let (aB1, ypB1) = indirectY()
-            c = 5 + (ypB1 ? 1 : 0)
-            A = read(address: aB1); setZN(A)
-
-        case 0xA2:
-            c = 2; X = immediate(); setZN(X)
-        case 0xA6:
-            c = 3; X = read(address: zeroPage()); setZN(X)
-        case 0xB6:
-            c = 4; X = read(address: zeroPageY()); setZN(X)
-        case 0xAE:
-            c = 4; X = read(address: absolute()); setZN(X)
-        case 0xBE:
-            let (aBE, ypBE) = absoluteY()
-            c = 4 + (ypBE ? 1 : 0)
-            X = read(address: aBE); setZN(X)
-
-        case 0xA0:
-            c = 2; Y = immediate(); setZN(Y)
-        case 0xA4:
-            c = 3; Y = read(address: zeroPage()); setZN(Y)
-        case 0xB4:
-            c = 4; Y = read(address: zeroPageX()); setZN(Y)
-        case 0xAC:
-            c = 4; Y = read(address: absolute()); setZN(Y)
-        case 0xBC:
-            let (aBC, xpBC) = absoluteX()
-            c = 4 + (xpBC ? 1 : 0)
-            Y = read(address: aBC); setZN(Y)
-
-        case 0x85:
-            c = 3; write(address: zeroPage(), value: A)
-        case 0x95:
-            c = 4; write(address: zeroPageX(), value: A)
-        case 0x8D:
-            c = 4; write(address: absolute(), value: A)
-        case 0x9D:
-            let (a9D, _) = absoluteX()
-            c = 5; write(address: a9D, value: A)
-        case 0x99:
-            let (a99, _) = absoluteY()
-            c = 5; write(address: a99, value: A)
-        case 0x81:
-            c = 6; write(address: indirectX(), value: A)
-        case 0x91:
-            let (a91, _) = indirectY()
-            c = 6; write(address: a91, value: A)
-
-        case 0x86:
-            c = 3; write(address: zeroPage(), value: X)
-        case 0x96:
-            c = 4; write(address: zeroPageY(), value: X)
-        case 0x8E:
-            c = 4; write(address: absolute(), value: X)
-
-        case 0x84:
-            c = 3; write(address: zeroPage(), value: Y)
-        case 0x94:
-            c = 4; write(address: zeroPageX(), value: Y)
-        case 0x8C:
-            c = 4; write(address: absolute(), value: Y)
-
-        case 0xAA: c = 2; X = A; setZN(X)
-        case 0x8A: c = 2; A = X; setZN(A)
-        case 0xA8: c = 2; Y = A; setZN(Y)
-        case 0x98: c = 2; A = Y; setZN(A)
-        case 0xBA: c = 2; X = SP; setZN(X)
-        case 0x9A: c = 2; SP = X
-
-        case 0x48: c = 3; push(A)
-        case 0x68: c = 4; A = pop(); setZN(A)
-        case 0x08: c = 3; push(P | Flag.B.rawValue | Flag.U.rawValue)
-        case 0x28:
-            c = 4
-            var fPLP = pop()
-            fPLP |= Flag.U.rawValue
-            fPLP &= ~Flag.B.rawValue
-            P = fPLP
-
-        case 0x29: c = 2; and(immediate())
-        case 0x25: c = 3; and(read(address: zeroPage()))
-        case 0x35: c = 4; and(read(address: zeroPageX()))
-        case 0x2D: c = 4; and(read(address: absolute()))
-        case 0x3D:
-            let (a3D, xp3D) = absoluteX()
-            c = 4 + (xp3D ? 1 : 0)
-            and(read(address: a3D))
-        case 0x39:
-            let (a39, yp39) = absoluteY()
-            c = 4 + (yp39 ? 1 : 0)
-            and(read(address: a39))
-        case 0x21: c = 6; and(read(address: indirectX()))
-        case 0x31:
-            let (a31, yp31) = indirectY()
-            c = 5 + (yp31 ? 1 : 0)
-            and(read(address: a31))
-
-        case 0x09: c = 2; ora(immediate())
-        case 0x05: c = 3; ora(read(address: zeroPage()))
-        case 0x15: c = 4; ora(read(address: zeroPageX()))
-        case 0x0D: c = 4; ora(read(address: absolute()))
-        case 0x1D:
-            let (a1D, xp1D) = absoluteX()
-            c = 4 + (xp1D ? 1 : 0)
-            ora(read(address: a1D))
-        case 0x19:
-            let (a19, yp19) = absoluteY()
-            c = 4 + (yp19 ? 1 : 0)
-            ora(read(address: a19))
-        case 0x01: c = 6; ora(read(address: indirectX()))
-        case 0x11:
-            let (a11, yp11) = indirectY()
-            c = 5 + (yp11 ? 1 : 0)
-            ora(read(address: a11))
-
-        case 0x49: c = 2; eor(immediate())
-        case 0x45: c = 3; eor(read(address: zeroPage()))
-        case 0x55: c = 4; eor(read(address: zeroPageX()))
-        case 0x4D: c = 4; eor(read(address: absolute()))
-        case 0x5D:
-            let (a5D, xp5D) = absoluteX()
-            c = 4 + (xp5D ? 1 : 0)
-            eor(read(address: a5D))
-        case 0x59:
-            let (a59, yp59) = absoluteY()
-            c = 4 + (yp59 ? 1 : 0)
-            eor(read(address: a59))
-        case 0x41: c = 6; eor(read(address: indirectX()))
-        case 0x51:
-            let (a51, yp51) = indirectY()
-            c = 5 + (yp51 ? 1 : 0)
-            eor(read(address: a51))
-
-        case 0x24:
-            c = 3
-            let v24 = read(address: zeroPage())
-            setFlag(.Z, (A & v24) == 0); setFlag(.V, (v24 & 0x40) != 0); setFlag(.N, (v24 & 0x80) != 0)
-        case 0x2C:
-            c = 4
-            let v2C = read(address: absolute())
-            setFlag(.Z, (A & v2C) == 0); setFlag(.V, (v2C & 0x40) != 0); setFlag(.N, (v2C & 0x80) != 0)
-
-        case 0x69: c = 2; adc(immediate())
-        case 0x65: c = 3; adc(read(address: zeroPage()))
-        case 0x75: c = 4; adc(read(address: zeroPageX()))
-        case 0x6D: c = 4; adc(read(address: absolute()))
-        case 0x7D:
-            let (a7D, xp7D) = absoluteX()
-            c = 4 + (xp7D ? 1 : 0)
-            adc(read(address: a7D))
-        case 0x79:
-            let (a79, yp79) = absoluteY()
-            c = 4 + (yp79 ? 1 : 0)
-            adc(read(address: a79))
-        case 0x61: c = 6; adc(read(address: indirectX()))
-        case 0x71:
-            let (a71, yp71) = indirectY()
-            c = 5 + (yp71 ? 1 : 0)
-            adc(read(address: a71))
-
-        case 0xE9: c = 2; sbc(immediate())
-        case 0xE5: c = 3; sbc(read(address: zeroPage()))
-        case 0xF5: c = 4; sbc(read(address: zeroPageX()))
-        case 0xED: c = 4; sbc(read(address: absolute()))
-        case 0xFD:
-            let (aFD, xpFD) = absoluteX()
-            c = 4 + (xpFD ? 1 : 0)
-            sbc(read(address: aFD))
-        case 0xF9:
-            let (aF9, ypF9) = absoluteY()
-            c = 4 + (ypF9 ? 1 : 0)
-            sbc(read(address: aF9))
-        case 0xE1: c = 6; sbc(read(address: indirectX()))
-        case 0xF1:
-            let (aF1, ypF1) = indirectY()
-            c = 5 + (ypF1 ? 1 : 0)
-            sbc(read(address: aF1))
-
-        case 0xC9: c = 2; cmp(A, immediate())
-        case 0xC5: c = 3; cmp(A, read(address: zeroPage()))
-        case 0xD5: c = 4; cmp(A, read(address: zeroPageX()))
-        case 0xCD: c = 4; cmp(A, read(address: absolute()))
-        case 0xDD:
-            let (aDD, xpDD) = absoluteX()
-            c = 4 + (xpDD ? 1 : 0)
-            cmp(A, read(address: aDD))
-        case 0xD9:
-            let (aD9, ypD9) = absoluteY()
-            c = 4 + (ypD9 ? 1 : 0)
-            cmp(A, read(address: aD9))
-        case 0xC1: c = 6; cmp(A, read(address: indirectX()))
-        case 0xD1:
-            let (aD1, ypD1) = indirectY()
-            c = 5 + (ypD1 ? 1 : 0)
-            cmp(A, read(address: aD1))
-
-        case 0xE0: c = 2; cmp(X, immediate())
-        case 0xE4: c = 3; cmp(X, read(address: zeroPage()))
-        case 0xEC: c = 4; cmp(X, read(address: absolute()))
-
-        case 0xC0: c = 2; cmp(Y, immediate())
-        case 0xC4: c = 3; cmp(Y, read(address: zeroPage()))
-        case 0xCC: c = 4; cmp(Y, read(address: absolute()))
-
-        case 0xE6:
-            c = 5; do { let a = zeroPage(); var v = read(address: a); v &+= 1; write(address: a, value: v); setZN(v) }
-        case 0xF6:
-            c = 6; do { let a = zeroPageX(); var v = read(address: a); v &+= 1; write(address: a, value: v); setZN(v) }
-        case 0xEE:
-            c = 6; do { let a = absolute(); var v = read(address: a); v &+= 1; write(address: a, value: v); setZN(v) }
-        case 0xFE:
-            c = 7
-            let (aFE, _) = absoluteX()
-            var vFE = read(address: aFE); vFE &+= 1; write(address: aFE, value: vFE); setZN(vFE)
-
-        case 0xC6:
-            c = 5; do { let a = zeroPage(); var v = read(address: a); v &-= 1; write(address: a, value: v); setZN(v) }
-        case 0xD6:
-            c = 6; do { let a = zeroPageX(); var v = read(address: a); v &-= 1; write(address: a, value: v); setZN(v) }
-        case 0xCE:
-            c = 6; do { let a = absolute(); var v = read(address: a); v &-= 1; write(address: a, value: v); setZN(v) }
-        case 0xDE:
-            c = 7
-            let (aDE, _) = absoluteX()
-            var vDE = read(address: aDE); vDE &-= 1; write(address: aDE, value: vDE); setZN(vDE)
-
-        case 0xE8: c = 2; X &+= 1; setZN(X)
-        case 0xC8: c = 2; Y &+= 1; setZN(Y)
-        case 0xCA: c = 2; X &-= 1; setZN(X)
-        case 0x88: c = 2; Y &-= 1; setZN(Y)
-
-        case 0x0A: c = 2; aslA()
-        case 0x4A: c = 2; lsrA()
-        case 0x2A: c = 2; rolA()
-        case 0x6A: c = 2; rorA()
-
-        case 0x06:
-            c = 5; aslM(zeroPage())
-        case 0x16:
-            c = 6; aslM(zeroPageX())
-        case 0x0E:
-            c = 6; aslM(absolute())
-        case 0x1E:
-            c = 7
-            let (a1E, _) = absoluteX()
-            aslM(a1E)
-
-        case 0x46:
-            c = 5; lsrM(zeroPage())
-        case 0x56:
-            c = 6; lsrM(zeroPageX())
-        case 0x4E:
-            c = 6; lsrM(absolute())
-        case 0x5E:
-            c = 7
-            let (a5E, _) = absoluteX()
-            lsrM(a5E)
-
-        case 0x26:
-            c = 5; rolM(zeroPage())
-        case 0x36:
-            c = 6; rolM(zeroPageX())
-        case 0x2E:
-            c = 6; rolM(absolute())
-        case 0x3E:
-            c = 7
-            let (a3E, _) = absoluteX()
-            rolM(a3E)
-
-        case 0x66:
-            c = 5; rorM(zeroPage())
-        case 0x76:
-            c = 6; rorM(zeroPageX())
-        case 0x6E:
-            c = 6; rorM(absolute())
-        case 0x7E:
-            c = 7
-            let (a7E, _) = absoluteX()
-            rorM(a7E)
-
-        case 0x4C:
-            c = 3; PC = absolute()
-        case 0x6C:
-            c = 5; PC = indirect()
-        case 0x20:
-            c = 6
-            let t = absolute()
-            let ret = PC &- 1
-            pushWord(ret)
-            PC = t
-        case 0x60:
-            c = 6; PC = popWord() &+ 1
-        case 0x00:
-            c = 7; brk()
-        case 0x40:
-            c = 6; rti()
-
-        case 0x90:
-            c = 2
-            if !getFlag(.C) {
-                let (t, cross) = relative()
-                c &+= 1; if cross { c &+= 1 }
-                PC = t
-            } else { _ = relative() }
-        case 0xB0:
-            c = 2
-            if getFlag(.C) {
-                let (t, cross) = relative()
-                c &+= 1; if cross { c &+= 1 }
-                PC = t
-            } else { _ = relative() }
-        case 0xF0:
-            c = 2
-            if getFlag(.Z) {
-                let (t, cross) = relative()
-                c &+= 1; if cross { c &+= 1 }
-                PC = t
-            } else { _ = relative() }
-        case 0x30:
-            c = 2
-            if getFlag(.N) {
-                let (t, cross) = relative()
-                c &+= 1; if cross { c &+= 1 }
-                PC = t
-            } else { _ = relative() }
-        case 0xD0:
-            c = 2
-            if !getFlag(.Z) {
-                let (t, cross) = relative()
-                c &+= 1; if cross { c &+= 1 }
-                PC = t
-            } else { _ = relative() }
-        case 0x10:
-            c = 2
-            if !getFlag(.N) {
-                let (t, cross) = relative()
-                c &+= 1; if cross { c &+= 1 }
-                PC = t
-            } else { _ = relative() }
-        case 0x50:
-            c = 2
-            if !getFlag(.V) {
-                let (t, cross) = relative()
-                c &+= 1; if cross { c &+= 1 }
-                PC = t
-            } else { _ = relative() }
-        case 0x70:
-            c = 2
-            if getFlag(.V) {
-                let (t, cross) = relative()
-                c &+= 1; if cross { c &+= 1 }
-                PC = t
-            } else { _ = relative() }
-
-        case 0x18: c = 2; setFlag(.C, false)
-        case 0x38: c = 2; setFlag(.C, true)
-        case 0x58: c = 2; setFlag(.I, false)
-        case 0x78: c = 2; setFlag(.I, true)
-        case 0xB8: c = 2; setFlag(.V, false)
-        case 0xD8: c = 2; setFlag(.D, false)
-        case 0xF8: c = 2; setFlag(.D, true)
-
-        case 0xEA: c = 2
-
-        case 0xA7: c = 3; opLAX(read(address: zeroPage()))
-        case 0xB7: c = 4; opLAX(read(address: zeroPageY()))
-        case 0xAF: c = 4; opLAX(read(address: absolute()))
-        case 0xBF:
-            let (aBF, ypBF) = absoluteY()
-            c = 4 + (ypBF ? 1 : 0)
-            opLAX(read(address: aBF))
-        case 0xA3: c = 6; opLAX(read(address: indirectX()))
-        case 0xB3:
-            let (aB3, ypB3) = indirectY()
-            c = 5 + (ypB3 ? 1 : 0)
-            opLAX(read(address: aB3))
-
-        case 0x87: c = 3; opSAX(zeroPage())
-        case 0x97: c = 4; opSAX(zeroPageY())
-        case 0x8F: c = 4; opSAX(absolute())
-        case 0x83: c = 6; opSAX(indirectX())
-
-        case 0xC7: c = 5; opDCP(zeroPage())
-        case 0xD7: c = 6; opDCP(zeroPageX())
-        case 0xCF: c = 6; opDCP(absolute())
-        case 0xDF:
-            c = 7
-            let (aDF, _) = absoluteX()
-            opDCP(aDF)
-        case 0xDB, 0xD3:
-            c = 8
-            let (aD3, _) = indirectY()
-            opDCP(aD3)
-
-        case 0xE7: c = 5; opISC(zeroPage())
-        case 0xF7: c = 6; opISC(zeroPageX())
-        case 0xEF: c = 6; opISC(absolute())
-        case 0xFF:
-            c = 7
-            let (aFF, _) = absoluteX()
-            opISC(aFF)
-        case 0xFB, 0xF3:
-            c = 8
-            let (aF3, _) = indirectY()
-            opISC(aF3)
-
-        case 0x07: c = 5; opSLO(zeroPage())
-        case 0x17: c = 6; opSLO(zeroPageX())
-        case 0x0F: c = 6; opSLO(absolute())
-        case 0x1F:
-            c = 7
-            let (a1F, _) = absoluteX()
-            opSLO(a1F)
-        case 0x1B, 0x13:
-            c = 8
-            let (a13, _) = indirectY()
-            opSLO(a13)
-
-        case 0x27: c = 5; opRLA(zeroPage())
-        case 0x37: c = 6; opRLA(zeroPageX())
-        case 0x2F: c = 6; opRLA(absolute())
-        case 0x3F:
-            c = 7
-            let (a3F, _) = absoluteX()
-            opRLA(a3F)
-        case 0x3B, 0x33:
-            c = 8
-            let (a33, _) = indirectY()
-            opRLA(a33)
-
-        case 0x47: c = 5; opSRE(zeroPage())
-        case 0x57: c = 6; opSRE(zeroPageX())
-        case 0x4F: c = 6; opSRE(absolute())
-        case 0x5F:
-            c = 7
-            let (a5F, _) = absoluteX()
-            opSRE(a5F)
-        case 0x5B, 0x53:
-            c = 8
-            let (a53, _) = indirectY()
-            opSRE(a53)
-
-        case 0x67: c = 5; opRRA(zeroPage())
-        case 0x77: c = 6; opRRA(zeroPageX())
-        case 0x6F: c = 6; opRRA(absolute())
-        case 0x7F:
-            c = 7
-            let (a7F, _) = absoluteX()
-            opRRA(a7F)
-        case 0x7B, 0x73:
-            c = 8
-            let (a73, _) = indirectY()
-            opRRA(a73)
-
-        case 0x0B, 0x2B: c = 2; opANC(immediate())
-        case 0x4B: c = 2; opALR(immediate())
-        case 0x6B: c = 2; opARR(immediate())
-        case 0xCB: c = 2; opAXS(immediate())
-
-        case 0xBB:
-            let (aBB, ypBB) = absoluteY()
-            c = 4 + (ypBB ? 1 : 0)
-            opLAS(aBB)
-        case 0x9B:
-            let base9B = readWord(address: PC); PC &+= 2
-            let addr9B = base9B &+ UInt16(Y)
-            c = 5
-            opTAS(storeAddr: addr9B, effectiveBase: base9B)
-        case 0x9F:
-            let base9F = readWord(address: PC); PC &+= 2
-            let addr9F = base9F &+ UInt16(Y)
-            c = 5
-            opAHX(storeAddr: addr9F, effectiveBase: base9F)
-        case 0x93:
-            let zp93 = read(address: PC); PC &+= 1
-            let lo93 = UInt16(read(address: UInt16(zp93)))
-            let hi93 = UInt16(read(address: UInt16((zp93 &+ 1) & 0xFF))) << 8
-            let base93 = hi93 | lo93
-            let addr93 = base93 &+ UInt16(Y)
-            c = 6
-            opAHX(storeAddr: addr93, effectiveBase: base93)
-        case 0x9C:
-            let base9C = readWord(address: PC); PC &+= 2
-            let addr9C = base9C &+ UInt16(X)
-            c = 5
-            opSHY(storeAddr: addr9C, effectiveBase: base9C)
-        case 0x9E:
-            let base9E = readWord(address: PC); PC &+= 2
-            let addr9E = base9E &+ UInt16(Y)
-            c = 5
-            opSHX(storeAddr: addr9E, effectiveBase: base9E)
-
-        case 0x1A, 0x3A, 0x5A, 0x7A, 0xDA, 0xFA:
-            c = 2
-        case 0x80, 0x82, 0x89, 0xC2, 0xE2:
-            c = 2; _ = immediate()
-        case 0x04, 0x44, 0x64:
-            c = 3; _ = zeroPage()
-        case 0x14, 0x34, 0x54, 0x74, 0xD4, 0xF4:
-            c = 4; _ = zeroPageX()
-        case 0x0C:
-            c = 4; _ = absolute()
-        case 0x1C, 0x3C, 0x5C, 0x7C, 0xDC, 0xFC:
-            let (_, cross) = absoluteX(); c = 4 + (cross ? 1 : 0)
-
-        default:
-            c = 2
+        
+        if stallIRQThisInstruction {
+            stallIRQThisInstruction = false
         }
 
-        if stallIRQThisInstruction { stallIRQThisInstruction = false }
+        let opcode = read(address: PC)
+        PC &+= 1
+        
+        // ---
+        // --- OPTIMIZATION: Execute from the table ---
+        // ---
+        let c = opcodeTable[Int(opcode)]()
+        
         cycles &+= UInt64(c)
         return c
     }
-
-    @inline(__always) private func execIllegalNOP(_ bytes: Int) {
-        for _ in 0..<bytes { _ = immediate() }
-    }
     
+    // ---
+    // --- OPTIMIZATION: This function builds the 256-entry opcode table ---
+    // ---
+    private func buildOpcodeTable() -> [() -> Int] {
+        var table: [() -> Int] = Array(repeating: { self.opKIL() }, count: 256)
+        
+        // --- Load/Store Operations ---
+            
+        // LDA
+        table[0xA9] = { self.A = self.immediate(); self.setZN(self.A); return 2 }
+        table[0xA5] = { self.A = self.read(address: self.zeroPage()); self.setZN(self.A); return 3 }
+        table[0xB5] = { self.A = self.read(address: self.zeroPageX()); self.setZN(self.A); return 4 }
+        table[0xAD] = { self.A = self.read(address: self.absolute()); self.setZN(self.A); return 4 }
+        table[0xBD] = { let (addr, cross) = self.absoluteX(); self.A = self.read(address: addr); self.setZN(self.A); return 4 + (cross ? 1 : 0) }
+        table[0xB9] = { let (addr, cross) = self.absoluteY(); self.A = self.read(address: addr); self.setZN(self.A); return 4 + (cross ? 1 : 0) }
+        table[0xA1] = { self.A = self.read(address: self.indirectX()); self.setZN(self.A); return 6 }
+        table[0xB1] = { let (addr, cross) = self.indirectY(); self.A = self.read(address: addr); self.setZN(self.A); return 5 + (cross ? 1 : 0) }
+
+        // LDX
+        table[0xA2] = { self.X = self.immediate(); self.setZN(self.X); return 2 }
+        table[0xA6] = { self.X = self.read(address: self.zeroPage()); self.setZN(self.X); return 3 }
+        table[0xB6] = { self.X = self.read(address: self.zeroPageY()); self.setZN(self.X); return 4 }
+        table[0xAE] = { self.X = self.read(address: self.absolute()); self.setZN(self.X); return 4 }
+        table[0xBE] = { let (addr, cross) = self.absoluteY(); self.X = self.read(address: addr); self.setZN(self.X); return 4 + (cross ? 1 : 0) }
+
+        // LDY
+        table[0xA0] = { self.Y = self.immediate(); self.setZN(self.Y); return 2 }
+        table[0xA4] = { self.Y = self.read(address: self.zeroPage()); self.setZN(self.Y); return 3 }
+        table[0xB4] = { self.Y = self.read(address: self.zeroPageX()); self.setZN(self.Y); return 4 }
+        table[0xAC] = { self.Y = self.read(address: self.absolute()); self.setZN(self.Y); return 4 }
+        table[0xBC] = { let (addr, cross) = self.absoluteX(); self.Y = self.read(address: addr); self.setZN(self.Y); return 4 + (cross ? 1 : 0) }
+
+        // STA
+        table[0x85] = { self.write(address: self.zeroPage(), value: self.A); return 3 }
+        table[0x95] = { self.write(address: self.zeroPageX(), value: self.A); return 4 }
+        table[0x8D] = { self.write(address: self.absolute(), value: self.A); return 4 }
+        table[0x9D] = { let (addr, _) = self.absoluteX(); self.write(address: addr, value: self.A); return 5 }
+        table[0x99] = { let (addr, _) = self.absoluteY(); self.write(address: addr, value: self.A); return 5 }
+        table[0x81] = { self.write(address: self.indirectX(), value: self.A); return 6 }
+        table[0x91] = { let (addr, _) = self.indirectY(); self.write(address: addr, value: self.A); return 6 }
+
+        // STX
+        table[0x86] = { self.write(address: self.zeroPage(), value: self.X); return 3 }
+        table[0x96] = { self.write(address: self.zeroPageY(), value: self.X); return 4 }
+        table[0x8E] = { self.write(address: self.absolute(), value: self.X); return 4 }
+
+        // STY
+        table[0x84] = { self.write(address: self.zeroPage(), value: self.Y); return 3 }
+        table[0x94] = { self.write(address: self.zeroPageX(), value: self.Y); return 4 }
+        table[0x8C] = { self.write(address: self.absolute(), value: self.Y); return 4 }
+
+        // --- Register Transfers ---
+        table[0xAA] = { self.X = self.A; self.setZN(self.X); return 2 }
+        table[0x8A] = { self.A = self.X; self.setZN(self.A); return 2 }
+        table[0xA8] = { self.Y = self.A; self.setZN(self.Y); return 2 }
+        table[0x98] = { self.A = self.Y; self.setZN(self.A); return 2 }
+        table[0xBA] = { self.X = self.SP; self.setZN(self.X); return 2 }
+        table[0x9A] = { self.SP = self.X; return 2 }
+
+        // --- Stack Operations ---
+        table[0x48] = { self.push(self.A); return 3 }
+        table[0x68] = { self.A = self.pop(); self.setZN(self.A); return 4 }
+        table[0x08] = { self.push(self.P | Flag.B.rawValue | Flag.U.rawValue); return 3 }
+        table[0x28] = { var f = self.pop(); f |= Flag.U.rawValue; f &= ~Flag.B.rawValue; self.P = f; return 4 }
+
+        // --- Logical (AND) ---
+        table[0x29] = { self.and(self.immediate()); return 2 }
+        table[0x25] = { self.and(self.read(address: self.zeroPage())); return 3 }
+        table[0x35] = { self.and(self.read(address: self.zeroPageX())); return 4 }
+        table[0x2D] = { self.and(self.read(address: self.absolute())); return 4 }
+        table[0x3D] = { let (addr, cross) = self.absoluteX(); self.and(self.read(address: addr)); return 4 + (cross ? 1 : 0) }
+        table[0x39] = { let (addr, cross) = self.absoluteY(); self.and(self.read(address: addr)); return 4 + (cross ? 1 : 0) }
+        table[0x21] = { self.and(self.read(address: self.indirectX())); return 6 }
+        table[0x31] = { let (addr, cross) = self.indirectY(); self.and(self.read(address: addr)); return 5 + (cross ? 1 : 0) }
+
+        // --- Logical (ORA) ---
+        table[0x09] = { self.ora(self.immediate()); return 2 }
+        table[0x05] = { self.ora(self.read(address: self.zeroPage())); return 3 }
+        table[0x15] = { self.ora(self.read(address: self.zeroPageX())); return 4 }
+        table[0x0D] = { self.ora(self.read(address: self.absolute())); return 4 }
+        table[0x1D] = { let (addr, cross) = self.absoluteX(); self.ora(self.read(address: addr)); return 4 + (cross ? 1 : 0) }
+        table[0x19] = { let (addr, cross) = self.absoluteY(); self.ora(self.read(address: addr)); return 4 + (cross ? 1 : 0) }
+        table[0x01] = { self.ora(self.read(address: self.indirectX())); return 6 }
+        table[0x11] = { let (addr, cross) = self.indirectY(); self.ora(self.read(address: addr)); return 5 + (cross ? 1 : 0) }
+
+        // --- Logical (EOR) ---
+        table[0x49] = { self.eor(self.immediate()); return 2 }
+        table[0x45] = { self.eor(self.read(address: self.zeroPage())); return 3 }
+        table[0x55] = { self.eor(self.read(address: self.zeroPageX())); return 4 }
+        table[0x4D] = { self.eor(self.read(address: self.absolute())); return 4 }
+        table[0x5D] = { let (addr, cross) = self.absoluteX(); self.eor(self.read(address: addr)); return 4 + (cross ? 1 : 0) }
+        table[0x59] = { let (addr, cross) = self.absoluteY(); self.eor(self.read(address: addr)); return 4 + (cross ? 1 : 0) }
+        table[0x41] = { self.eor(self.read(address: self.indirectX())); return 6 }
+        table[0x51] = { let (addr, cross) = self.indirectY(); self.eor(self.read(address: addr)); return 5 + (cross ? 1 : 0) }
+
+        // --- Bit Test (BIT) ---
+        table[0x24] = { let v = self.read(address: self.zeroPage()); self.setFlag(.Z, (self.A & v) == 0); self.setFlag(.V, (v & 0x40) != 0); self.setFlag(.N, (v & 0x80) != 0); return 3 }
+        table[0x2C] = { let v = self.read(address: self.absolute()); self.setFlag(.Z, (self.A & v) == 0); self.setFlag(.V, (v & 0x40) != 0); self.setFlag(.N, (v & 0x80) != 0); return 4 }
+
+        // --- Arithmetic (ADC) ---
+        table[0x69] = { self.adc(self.immediate()); return 2 }
+        table[0x65] = { self.adc(self.read(address: self.zeroPage())); return 3 }
+        table[0x75] = { self.adc(self.read(address: self.zeroPageX())); return 4 }
+        table[0x6D] = { self.adc(self.read(address: self.absolute())); return 4 }
+        table[0x7D] = { let (addr, cross) = self.absoluteX(); self.adc(self.read(address: addr)); return 4 + (cross ? 1 : 0) }
+        table[0x79] = { let (addr, cross) = self.absoluteY(); self.adc(self.read(address: addr)); return 4 + (cross ? 1 : 0) }
+        table[0x61] = { self.adc(self.read(address: self.indirectX())); return 6 }
+        table[0x71] = { let (addr, cross) = self.indirectY(); self.adc(self.read(address: addr)); return 5 + (cross ? 1 : 0) }
+
+        // --- Arithmetic (SBC) ---
+        table[0xE9] = { self.sbc(self.immediate()); return 2 }
+        table[0xEB] = { self.sbc(self.immediate()); return 2 } // Illegal
+        table[0xE5] = { self.sbc(self.read(address: self.zeroPage())); return 3 }
+        table[0xF5] = { self.sbc(self.read(address: self.zeroPageX())); return 4 }
+        table[0xED] = { self.sbc(self.read(address: self.absolute())); return 4 }
+        table[0xFD] = { let (addr, cross) = self.absoluteX(); self.sbc(self.read(address: addr)); return 4 + (cross ? 1 : 0) }
+        table[0xF9] = { let (addr, cross) = self.absoluteY(); self.sbc(self.read(address: addr)); return 4 + (cross ? 1 : 0) }
+        table[0xE1] = { self.sbc(self.read(address: self.indirectX())); return 6 }
+        table[0xF1] = { let (addr, cross) = self.indirectY(); self.sbc(self.read(address: addr)); return 5 + (cross ? 1 : 0) }
+
+        // --- Compare (CMP) ---
+        table[0xC9] = { self.cmp(self.A, self.immediate()); return 2 }
+        table[0xC5] = { self.cmp(self.A, self.read(address: self.zeroPage())); return 3 }
+        table[0xD5] = { self.cmp(self.A, self.read(address: self.zeroPageX())); return 4 }
+        table[0xCD] = { self.cmp(self.A, self.read(address: self.absolute())); return 4 }
+        table[0xDD] = { let (addr, cross) = self.absoluteX(); self.cmp(self.A, self.read(address: addr)); return 4 + (cross ? 1 : 0) }
+        table[0xD9] = { let (addr, cross) = self.absoluteY(); self.cmp(self.A, self.read(address: addr)); return 4 + (cross ? 1 : 0) }
+        table[0xC1] = { self.cmp(self.A, self.read(address: self.indirectX())); return 6 }
+        table[0xD1] = { let (addr, cross) = self.indirectY(); self.cmp(self.A, self.read(address: addr)); return 5 + (cross ? 1 : 0) }
+
+        // --- Compare (CPX) ---
+        table[0xE0] = { self.cmp(self.X, self.immediate()); return 2 }
+        table[0xE4] = { self.cmp(self.X, self.read(address: self.zeroPage())); return 3 }
+        table[0xEC] = { self.cmp(self.X, self.read(address: self.absolute())); return 4 }
+
+        // --- Compare (CPY) ---
+        table[0xC0] = { self.cmp(self.Y, self.immediate()); return 2 }
+        table[0xC4] = { self.cmp(self.Y, self.read(address: self.zeroPage())); return 3 }
+        table[0xCC] = { self.cmp(self.Y, self.read(address: self.absolute())); return 4 }
+
+        // --- Increment (INC) ---
+        table[0xE6] = { self.incM(self.zeroPage()); return 5 }
+        table[0xF6] = { self.incM(self.zeroPageX()); return 6 }
+        table[0xEE] = { self.incM(self.absolute()); return 6 }
+        table[0xFE] = { let (addr, _) = self.absoluteX(); self.incM(addr); return 7 }
+
+        // --- Decrement (DEC) ---
+        table[0xC6] = { self.decM(self.zeroPage()); return 5 }
+        table[0xD6] = { self.decM(self.zeroPageX()); return 6 }
+        table[0xCE] = { self.decM(self.absolute()); return 6 }
+        table[0xDE] = { let (addr, _) = self.absoluteX(); self.decM(addr); return 7 }
+
+        // --- Register Increments/Decrements ---
+        table[0xE8] = { self.X &+= 1; self.setZN(self.X); return 2 }
+        table[0xC8] = { self.Y &+= 1; self.setZN(self.Y); return 2 }
+        table[0xCA] = { self.X &-= 1; self.setZN(self.X); return 2 }
+        table[0x88] = { self.Y &-= 1; self.setZN(self.Y); return 2 }
+
+        // --- Shifts (Accumulator) ---
+        table[0x0A] = { self.aslA(); return 2 }
+        table[0x4A] = { self.lsrA(); return 2 }
+        table[0x2A] = { self.rolA(); return 2 }
+        table[0x6A] = { self.rorA(); return 2 }
+
+        // --- Shifts (Memory) ---
+        table[0x06] = { self.aslM(self.zeroPage()); return 5 }
+        table[0x16] = { self.aslM(self.zeroPageX()); return 6 }
+        table[0x0E] = { self.aslM(self.absolute()); return 6 }
+        table[0x1E] = { let (addr, _) = self.absoluteX(); self.aslM(addr); return 7 }
+
+        table[0x46] = { self.lsrM(self.zeroPage()); return 5 }
+        table[0x56] = { self.lsrM(self.zeroPageX()); return 6 }
+        table[0x4E] = { self.lsrM(self.absolute()); return 6 }
+        table[0x5E] = { let (addr, _) = self.absoluteX(); self.lsrM(addr); return 7 }
+
+        table[0x26] = { self.rolM(self.zeroPage()); return 5 }
+        table[0x36] = { self.rolM(self.zeroPageX()); return 6 }
+        table[0x2E] = { self.rolM(self.absolute()); return 6 }
+        table[0x3E] = { let (addr, _) = self.absoluteX(); self.rolM(addr); return 7 }
+
+        table[0x66] = { self.rorM(self.zeroPage()); return 5 }
+        table[0x76] = { self.rorM(self.zeroPageX()); return 6 }
+        table[0x6E] = { self.rorM(self.absolute()); return 6 }
+        table[0x7E] = { let (addr, _) = self.absoluteX(); self.rorM(addr); return 7 }
+
+        // --- Jumps & Subroutines ---
+        table[0x4C] = { self.PC = self.absolute(); return 3 }
+        table[0x6C] = { self.PC = self.indirect(); return 5 }
+        table[0x20] = { let target = self.absolute(); self.pushWord(self.PC &- 1); self.PC = target; return 6 }
+        table[0x60] = { self.PC = self.popWord() &+ 1; return 6 }
+        table[0x00] = { self.brk(); return 7 }
+        table[0x40] = { self.rti(); return 6 }
+
+        // --- Branches ---
+        let branch: (Flag, Bool) -> () -> Int = { flag, condition in
+            return {
+                let (target, cross) = self.relative()
+                if self.getFlag(flag) == condition {
+                    self.PC = target
+                    return 3 + (cross ? 1 : 0)
+                }
+                return 2
+            }
+        }
+        
+        table[0x90] = branch(.C, false) // BCC
+        table[0xB0] = branch(.C, true)  // BCS
+        table[0xF0] = branch(.Z, true)  // BEQ
+        table[0x30] = branch(.N, true)  // BMI
+        table[0xD0] = branch(.Z, false) // BNE
+        table[0x10] = branch(.N, false) // BPL
+        table[0x50] = branch(.V, false) // BVC
+        table[0x70] = branch(.V, true)  // BVS
+
+        // --- Flag Clears/Sets ---
+        table[0x18] = { self.setFlag(.C, false); return 2 } // CLC
+        table[0x38] = { self.setFlag(.C, true); return 2 }  // SEC
+        table[0x58] = { self.setFlag(.I, false); return 2 } // CLI
+        table[0x78] = { self.setFlag(.I, true); return 2 }  // SEI
+        table[0xB8] = { self.setFlag(.V, false); return 2 } // CLV
+        table[0xD8] = { self.setFlag(.D, false); return 2 } // CLD
+        table[0xF8] = { self.setFlag(.D, true); return 2 }  // SED
+
+        // --- NOP ---
+        table[0xEA] = { return 2 }
+
+        // ---
+        // --- Illegal Opcodes ---
+        // ---
+        
+        // --- Illegal NOPs ---
+        let nop1: () -> Int = { return 2 }
+        table[0x1A] = nop1; table[0x3A] = nop1; table[0x5A] = nop1; table[0x7A] = nop1; table[0xDA] = nop1; table[0xFA] = nop1
+        
+        let nop2: () -> Int = { self.PC &+= 1; return 2 } // imm
+        table[0x80] = nop2; table[0x82] = nop2; table[0x89] = nop2; table[0xC2] = nop2; table[0xE2] = nop2
+        
+        let nop2zp: () -> Int = { _ = self.zeroPage(); return 3 } // zp
+        table[0x04] = nop2zp; table[0x44] = nop2zp; table[0x64] = nop2zp
+        
+        let nop2zpx: () -> Int = { _ = self.zeroPageX(); return 4 } // zp,x
+        table[0x14] = nop2zpx; table[0x34] = nop2zpx; table[0x54] = nop2zpx; table[0x74] = nop2zpx; table[0xD4] = nop2zpx; table[0xF4] = nop2zpx
+        
+        let nop3abs: () -> Int = { _ = self.absolute(); return 4 } // abs
+        table[0x0C] = nop3abs
+        
+        let nop3absx: () -> Int = { let (addr, cross) = self.absoluteX(); _ = self.read(address: addr); return 4 + (cross ? 1 : 0) } // abs,x
+        table[0x1C] = nop3absx; table[0x3C] = nop3absx; table[0x5C] = nop3absx; table[0x7C] = nop3absx; table[0xDC] = nop3absx; table[0xFC] = nop3absx
+
+        // --- LAX (LDA + LDX) ---
+        let opLAX: (UInt16) -> () = { addr in let v = self.read(address: addr); self.A = v; self.X = v; self.setZN(v) }
+        table[0xA7] = { opLAX(self.zeroPage()); return 3 }
+        table[0xB7] = { opLAX(self.zeroPageY()); return 4 }
+        table[0xAF] = { opLAX(self.absolute()); return 4 }
+        table[0xBF] = { let (addr, cross) = self.absoluteY(); opLAX(addr); return 4 + (cross ? 1 : 0) }
+        table[0xA3] = { opLAX(self.indirectX()); return 6 }
+        table[0xB3] = { let (addr, cross) = self.indirectY(); opLAX(addr); return 5 + (cross ? 1 : 0) }
+        
+        // --- SAX (STA & STX) ---
+        let opSAX: (UInt16) -> () = { addr in self.write(address: addr, value: self.A & self.X) }
+        table[0x87] = { opSAX(self.zeroPage()); return 3 }
+        table[0x97] = { opSAX(self.zeroPageY()); return 4 }
+        table[0x8F] = { opSAX(self.absolute()); return 4 }
+        table[0x83] = { opSAX(self.indirectX()); return 6 }
+        
+        // --- DCP (DEC + CMP) ---
+        let opDCP: (UInt16) -> () = { addr in var v = self.read(address: addr); v &-= 1; self.write(address: addr, value: v); self.cmp(self.A, v) }
+        table[0xC7] = { opDCP(self.zeroPage()); return 5 }
+        table[0xD7] = { opDCP(self.zeroPageX()); return 6 }
+        table[0xCF] = { opDCP(self.absolute()); return 6 }
+        table[0xDF] = { let (addr, _) = self.absoluteX(); opDCP(addr); return 7 }
+        table[0xDB] = { let (addr, _) = self.absoluteY(); opDCP(addr); return 7 }
+        table[0xC3] = { opDCP(self.indirectX()); return 8 }
+        table[0xD3] = { let (addr, _) = self.indirectY(); opDCP(addr); return 8 }
+
+        // --- ISC (INC + SBC) ---
+        let opISC: (UInt16) -> () = { addr in var v = self.read(address: addr); v &+= 1; self.write(address: addr, value: v); self.sbc(v) }
+        table[0xE7] = { opISC(self.zeroPage()); return 5 }
+        table[0xF7] = { opISC(self.zeroPageX()); return 6 }
+        table[0xEF] = { opISC(self.absolute()); return 6 }
+        table[0xFF] = { let (addr, _) = self.absoluteX(); opISC(addr); return 7 }
+        table[0xFB] = { let (addr, _) = self.absoluteY(); opISC(addr); return 7 }
+        table[0xE3] = { opISC(self.indirectX()); return 8 }
+        table[0xF3] = { let (addr, _) = self.indirectY(); opISC(addr); return 8 }
+
+        // --- SLO (ASL + ORA) ---
+        let opSLO: (UInt16) -> () = { addr in var v = self.read(address: addr); self.setFlag(.C, (v & 0x80) != 0); v &<<= 1; self.write(address: addr, value: v); self.ora(v) }
+        table[0x07] = { opSLO(self.zeroPage()); return 5 }
+        table[0x17] = { opSLO(self.zeroPageX()); return 6 }
+        table[0x0F] = { opSLO(self.absolute()); return 6 }
+        table[0x1F] = { let (addr, _) = self.absoluteX(); opSLO(addr); return 7 }
+        table[0x1B] = { let (addr, _) = self.absoluteY(); opSLO(addr); return 7 }
+        table[0x03] = { opSLO(self.indirectX()); return 8 }
+        table[0x13] = { let (addr, _) = self.indirectY(); opSLO(addr); return 8 }
+
+        // --- RLA (ROL + AND) ---
+        let opRLA: (UInt16) -> () = { addr in var v = self.read(address: addr); let cin: UInt8 = self.getFlag(.C) ? 1 : 0; let newC = (v & 0x80) != 0; v = (v &<< 1) | cin; self.write(address: addr, value: v); self.setFlag(.C, newC); self.and(v) }
+        table[0x27] = { opRLA(self.zeroPage()); return 5 }
+        table[0x37] = { opRLA(self.zeroPageX()); return 6 }
+        table[0x2F] = { opRLA(self.absolute()); return 6 }
+        table[0x3F] = { let (addr, _) = self.absoluteX(); opRLA(addr); return 7 }
+        table[0x3B] = { let (addr, _) = self.absoluteY(); opRLA(addr); return 7 }
+        table[0x23] = { opRLA(self.indirectX()); return 8 }
+        table[0x33] = { let (addr, _) = self.indirectY(); opRLA(addr); return 8 }
+
+        // --- SRE (LSR + EOR) ---
+        let opSRE: (UInt16) -> () = { addr in var v = self.read(address: addr); self.setFlag(.C, (v & 0x01) != 0); v &>>= 1; self.write(address: addr, value: v); self.eor(v) }
+        table[0x47] = { opSRE(self.zeroPage()); return 5 }
+        table[0x57] = { opSRE(self.zeroPageX()); return 6 }
+        table[0x4F] = { opSRE(self.absolute()); return 6 }
+        table[0x5F] = { let (addr, _) = self.absoluteX(); opSRE(addr); return 7 }
+        table[0x5B] = { let (addr, _) = self.absoluteY(); opSRE(addr); return 7 }
+        table[0x43] = { opSRE(self.indirectX()); return 8 }
+        table[0x53] = { let (addr, _) = self.indirectY(); opSRE(addr); return 8 }
+
+        // --- RRA (ROR + ADC) ---
+        let opRRA: (UInt16) -> () = { addr in var v = self.read(address: addr); let cin: UInt8 = self.getFlag(.C) ? 0x80 : 0; let newC = (v & 0x01) != 0; v = (v &>> 1) | cin; self.write(address: addr, value: v); self.setFlag(.C, newC); self.adc(v) }
+        table[0x67] = { opRRA(self.zeroPage()); return 5 }
+        table[0x77] = { opRRA(self.zeroPageX()); return 6 }
+        table[0x6F] = { opRRA(self.absolute()); return 6 }
+        table[0x7F] = { let (addr, _) = self.absoluteX(); opRRA(addr); return 7 }
+        table[0x7B] = { let (addr, _) = self.absoluteY(); opRRA(addr); return 7 }
+        table[0x63] = { opRRA(self.indirectX()); return 8 }
+        table[0x73] = { let (addr, _) = self.indirectY(); opRRA(addr); return 8 }
+
+        // --- Illegal Immediate Opcodes ---
+        table[0x0B] = { let v = self.immediate(); self.and(v); self.setFlag(.C, (self.A & 0x80) != 0); return 2 } // ANC
+        table[0x2B] = { let v = self.immediate(); self.and(v); self.setFlag(.C, (self.A & 0x80) != 0); return 2 } // ANC
+        table[0x4B] = { let v = self.immediate(); self.and(v); self.lsrA(); return 2 } // ALR
+        table[0x6B] = { let v = self.immediate(); self.and(v); self.rorA(); return 2 } // ARR
+        table[0xCB] = { let v = self.immediate(); let t = (self.A & self.X); let r = t &- v; self.setFlag(.C, t >= v); self.X = r; self.setZN(self.X); return 2 } // AXS
+        
+        // --- Other Misc Illegals ---
+        table[0xBB] = { let (addr, cross) = self.absoluteY(); let v = self.read(address: addr) & self.SP; self.SP = v; self.A = v; self.X = v; self.setZN(v); return 4 + (cross ? 1 : 0) } // LAS
+        table[0x9B] = { let (base, _) = self.absoluteY(); let addr = base; let hiPlus1 = UInt8(((base >> 8) & 0xFF) &+ 1); self.SP = self.A & self.X; let v = self.SP & hiPlus1; self.write(address: addr, value: v); return 5 } // TAS
+        table[0x9F] = { let (addr, _) = self.absoluteY(); let base = addr &- UInt16(self.Y); let v = (self.A & self.X) & UInt8(((base >> 8) & 0xFF) &+ 1); self.write(address: addr, value: v); return 5 } // AHX
+        table[0x93] = { let (addr, _) = self.indirectY(); let base = addr &- UInt16(self.Y); let v = (self.A & self.X) & UInt8(((base >> 8) & 0xFF) &+ 1); self.write(address: addr, value: v); return 6 } // AHX
+        table[0x9C] = { let (addr, _) = self.absoluteX(); let base = addr &- UInt16(self.X); let v = self.Y & UInt8(((base >> 8) & 0xFF) &+ 1); self.write(address: addr, value: v); return 5 } // SHY
+        table[0x9E] = { let (addr, _) = self.absoluteY(); let base = addr &- UInt16(self.Y); let v = self.X & UInt8(((base >> 8) & 0xFF) &+ 1); self.write(address: addr, value: v); return 5 } // SHX
+
+        return table
+    }
 }

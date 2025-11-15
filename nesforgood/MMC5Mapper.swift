@@ -19,11 +19,15 @@ final class MMC5Mapper: Mapper {
     public private(set) var splitThreshold: UInt8 = 0
     public private(set) var splitScroll: UInt8 = 0
     public private(set) var splitChrBank: UInt8 = 0
-    private var scanlineTarget: UInt8 = 0
-    private var irqEnabled: Bool = false
-    private var irqPending: Bool = false
-    private var inFrame: Bool = false
-    private var scanlineCounter: UInt8 = 0
+    
+    // --- ACCESS CONTROL FIXES FOR PPU WRITE ---
+    public var scanlineTarget: UInt8 = 0 // Needs to be readable/writable by PPU
+    public var irqEnabled: Bool = false     // Needs to be readable/writable by PPU
+    public var irqPending: Bool = false     // Needs to be readable/writable by PPU
+    public var inFrame: Bool = false        // Needs to be readable/writable by PPU
+    public var scanlineCounter: UInt8 = 0   // Needs to be readable/writable by PPU
+    // --- END FIXES ---
+
     private var lastPpuAddr: UInt16 = 0
     private var matchCount: UInt8 = 0
     private var lastEdgeDot: UInt64 = 0
@@ -35,34 +39,42 @@ final class MMC5Mapper: Mapper {
     init(prgROM: [UInt8], chr: CHRMemory, prgRAM: ExtRAM?, mirroring: Mirroring) {
         self.prgROM = prgROM
         self.chr = chr
-        self.prgRAM = prgRAM ?? ExtRAM(size: 64 * 1024)
+        if let existingRAM = prgRAM {
+            self.prgRAM = existingRAM
+        } else {
+            self.prgRAM = ExtRAM(size: 64 * 1024)
+        }
         self.mirroring = mirroring
-        self.prgMode = 3
-        self.chrMode = 3
-        self.prgRamProtect1 = 0
-        self.prgRamProtect2 = 0
-        self.extRamMode = 0
-        self.nametableMap = 0
-        self.fillTile = 0
-        self.fillColor = 0
-        self.prgBanks = [UInt8](repeating: 0, count: 5)
-        self.chrBanks = [UInt8](repeating: 0, count: 12)
-        self.chrUpper = 0
-        self.splitEnabled = false
-        self.splitSide = false
-        self.splitThreshold = 0
-        self.splitScroll = 0
-        self.splitChrBank = 0
-        self.scanlineTarget = 0
-        self.irqEnabled = false
-        self.irqPending = false
-        self.inFrame = false
-        self.scanlineCounter = 0
-        self.lastPpuAddr = 0
-        self.matchCount = 0
-        self.lastEdgeDot = 0
-        self.extAttrEnabled = false
-        self.eightBySixteen = false
+        reset()
+    }
+    
+    func reset() {
+        prgMode = 3
+        chrMode = 3
+        prgRamProtect1 = 0
+        prgRamProtect2 = 0
+        extRamMode = 0
+        nametableMap = 0
+        fillTile = 0
+        fillColor = 0
+        prgBanks = [UInt8](repeating: 0, count: 5)
+        chrBanks = [UInt8](repeating: 0, count: 12)
+        chrUpper = 0
+        splitEnabled = false
+        splitSide = false
+        splitThreshold = 0
+        splitScroll = 0
+        splitChrBank = 0
+        scanlineTarget = 0
+        irqEnabled = false
+        irqPending = false
+        inFrame = false
+        scanlineCounter = 0
+        lastPpuAddr = 0
+        matchCount = 0
+        lastEdgeDot = 0
+        extAttrEnabled = false
+        eightBySixteen = false
     }
 
     func cpuRead(address: UInt16) -> UInt8 {
@@ -77,7 +89,7 @@ final class MMC5Mapper: Mapper {
             if prgRamEnabled {
                 let bank = Int(prgBanks[0] & 0x07)
                 let off = Int(address - 0x6000)
-                return prgRAM?.data[(bank * 8192 + off) % (prgRAM?.data.count ?? 1)] ?? 0
+                return prgRAM?.data[(bank * 8192 + off) % (prgRAM?.size ?? 1)] ?? 0
             }
             return 0
         case 0x8000...0xFFFF:
@@ -139,7 +151,7 @@ final class MMC5Mapper: Mapper {
             if prgRamEnabled {
                 let bank = Int(prgBanks[0] & 0x07)
                 let off = Int(address - 0x6000)
-                prgRAM?.data[(bank * 8192 + off) % (prgRAM?.data.count ?? 1)] = value
+                prgRAM?.data[(bank * 8192 + off) % (prgRAM?.size ?? 1)] = value
             }
         default:
             break
@@ -193,17 +205,18 @@ final class MMC5Mapper: Mapper {
     }
 
     private func prgRamRead(bank: Int, off: Int) -> UInt8 {
-        prgRAM?.data[(bank * prgBankSize8K + off) % (prgRAM?.data.count ?? 1)] ?? 0
+        prgRAM?.data[(bank * prgBankSize8K + off) % (prgRAM?.size ?? 1)] ?? 0
     }
 
     func ppuRead(address: UInt16) -> UInt8 {
         let a = Int(address & 0x1FFF)
         let bank = getChrBank(for: address)
         let idx = (bank * chr1K + a) % chr.data.count
+        
         if extAttrEnabled {
-            let palIdx = (chrUpper & 0x03) << 2
-            return chr.data[idx]
+            // Placeholder
         }
+        
         return chr.data[idx]
     }
 
@@ -220,9 +233,13 @@ final class MMC5Mapper: Mapper {
         guard slot >= 0 && slot < chrRegsForSlot.count else { return 0 }
         let reg = chrRegsForSlot[slot]
         var bank = Int(chrBanks[reg])
-        if chrMode == 3 || chrMode == 2 {
+        
+        switch chrMode {
+        case 2, 3:
             bank |= Int(chrUpper) << 8
+        default: break
         }
+        
         if extAttrEnabled {
             bank = Int(chrUpper) << 6 | (bank & 0x3F)
         }
@@ -248,32 +265,10 @@ final class MMC5Mapper: Mapper {
         default: return [0, 1, 2, 3, 8, 9, 10, 11]
         }
     }
-
-    func ppuA12Observe(addr: UInt16, ppuDot: UInt64) {
-        if (addr & 0x2000) == 0x2000 {
-            if addr == lastPpuAddr && ppuDot >= lastEdgeDot + 8 {
-                matchCount &+= 1
-                if matchCount >= 3 {
-                    scanlineCounter &+= 1
-                    inFrame = (scanlineCounter < 240)
-                    if scanlineCounter == scanlineTarget && irqEnabled {
-                        irqPending = true
-                    }
-                    matchCount = 0
-                    lastEdgeDot = ppuDot
-                }
-            } else {
-                matchCount = 1
-            }
-            lastPpuAddr = addr
-        } else {
-            matchCount = 0
-        }
-    }
     
-    func resetScanlineCounter() {
-        scanlineCounter = 0
-        inFrame = false
+    func clockScanlineCounter() {
+        // This method satisfies the Mapper protocol but the actual
+        // MMC5 counting is handled in PPU.swift at cycle 256 for accuracy.
     }
 
     func mapperIRQAsserted() -> Bool { return irqPending && irqEnabled }

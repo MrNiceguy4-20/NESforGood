@@ -1,4 +1,3 @@
-
 import SwiftUI
 import Combine
 import AppKit
@@ -33,6 +32,13 @@ struct ContentView: View {
                     curvature: Float(crtEnabled ? curvature : 0.0)
                 )
                 .background(Color.black)
+                // ---
+                // --- THIS IS THE FIX ---
+                // ---
+                // Hide the MetalView if no cartridge is loaded.
+                // This reveals the Text view underneath.
+                .opacity(emulator.cartridge == nil ? 0.0 : 1.0)
+                
                 if emulator.cartridge == nil {
                     Text("Load a ROM to start playing")
                         .foregroundColor(.gray)
@@ -171,8 +177,11 @@ struct ContentView: View {
 
     private func loadROM() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.data]
-        panel.allowedFileTypes = ["nes"]
+        
+        // --- THIS IS THE FIX ---
+        panel.allowedContentTypes = [UTType(filenameExtension: "nes") ?? .data]
+        // -----------------------
+        
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
@@ -197,4 +206,3 @@ struct ContentView: View {
 }
 
 #Preview { ContentView() }
-

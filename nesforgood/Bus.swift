@@ -21,10 +21,86 @@ final class Bus {
     private var mmc3IRQReload: UInt8 = 0
     private var mmc3IRQEnabled: Bool = false
     private var mmc3IRQPending: Bool = false
-    public var mapperIRQAsserted: Bool {
-        return cartridge.mapper.mapperIRQAsserted()
+    
+    // ---
+    // --- OPTIMIZATION: Replaced [UInt8] with UnsafeMutablePointer ---
+    // ---
+    private var ram: UnsafeMutablePointer<UInt8>
+    
+    var cartridge: Cartridge
+    let ppu: PPU
+    let apu: APU
+    let controller: Controller
+    weak var core: EmulatorCore?
+    
+    // ---
+    // --- OPTIMIZATION: Pre-cast mappers ---
+    // ---
+    private let mapper: Mapper
+    private let nromMapper: NROMMapper?
+    private let mmc1Mapper: MMC1Mapper?
+    private let uxromMapper: UxROMMapper?
+    private let cnromMapper: CNROMMapper?
+    private let mmc3Mapper: MMC3Mapper?
+    private let mmc5Mapper: MMC5Mapper?
+    private let axromMapper: AxROMMapper?
+    private let mmc2Mapper: MMC2Mapper?
+    private let mmc4Mapper: MMC4Mapper?
+    private let colorDreamsMapper: ColorDreamsMapper?
+    private let gnromMapper: GNROMMapper?
+    private let mapper71: Mapper71?
+
+    // ---
+    // --- OPTIMIZATION: Consolidated Mapper Functions ---
+    // ---
+    private var prgReadTable: [((UInt16) -> UInt8)] = []
+    private var prgWriteTable: [((UInt16, UInt8) -> Void)] = []
+
+    private let debugLogging = false
+    
+    @inline(__always) private func log(_ s: @autoclosure () -> String) {
+        if debugLogging { print("[BUS] \(s())") }
     }
     
+    init(cartridge: Cartridge, ppu: PPU, apu: APU, controller: Controller, core: EmulatorCore) {
+        self.cartridge = cartridge
+        self.ppu = ppu
+        self.apu = apu
+        self.controller = controller
+        self.core = core
+        
+        self.ram = .allocate(capacity: 0x0800)
+        self.ram.initialize(repeating: 0, count: 0x0800)
+        
+        let mapper = cartridge.mapper
+        self.mapper = mapper
+        self.nromMapper = mapper as? NROMMapper
+        self.mmc1Mapper = mapper as? MMC1Mapper
+        self.uxromMapper = mapper as? UxROMMapper
+        self.cnromMapper = mapper as? CNROMMapper
+        self.mmc3Mapper = mapper as? MMC3Mapper
+        self.mmc5Mapper = mapper as? MMC5Mapper
+        self.axromMapper = mapper as? AxROMMapper
+        self.mmc2Mapper = mapper as? MMC2Mapper
+        self.mmc4Mapper = mapper as? MMC4Mapper
+        self.colorDreamsMapper = mapper as? ColorDreamsMapper
+        self.gnromMapper = mapper as? GNROMMapper
+        self.mapper71 = mapper as? Mapper71
+
+        // --- OPTIMIZATION: Build mapper tables after init ---
+        let readClosure: ((UInt16) -> UInt8) = { addr in cartridge.mapper.cpuRead(address: addr) }
+        let writeClosure: ((UInt16, UInt8) -> Void) = { addr, val in cartridge.mapper.cpuWrite(address: addr, value: val) }
+        
+        // Initialize the table for the full PRG space (0x6000-0xFFFF)
+        self.prgReadTable = Array(repeating: readClosure, count: 0x10000)
+        self.prgWriteTable = Array(repeating: writeClosure, count: 0x10000)
+    }
+    
+    deinit {
+        ram.deinitialize(count: 0x0800)
+        ram.deallocate()
+    }
+
     func clearMapperIRQ() {
         cartridge.mapper.mapperIRQClear()
     }
@@ -38,28 +114,6 @@ final class Bus {
         if chr.isEmpty { chr = Array(repeating: 0, count: 0x2000) }
     }
     
-    private var ram = [UInt8](repeating: 0, count: 0x0800)
-    
-    var cartridge: Cartridge
-    let ppu: PPU
-    let apu: APU
-    let controller: Controller
-    weak var core: EmulatorCore?
-    
-    private let debugLogging = false
-    
-    @inline(__always) private func log(_ s: @autoclosure () -> String) {
-        if debugLogging { print("[BUS] \(s())") }
-    }
-    
-    init(cartridge: Cartridge, ppu: PPU, apu: APU, controller: Controller, core: EmulatorCore) {
-        self.cartridge = cartridge
-        self.ppu = ppu
-        self.apu = apu
-        self.controller = controller
-        self.core = core
-    }
-    
     @inline(__always) private func ppuReg(_ addr: UInt16) -> UInt16 {
         return 0x2000 | (addr & 0x0007)
     }
@@ -68,62 +122,47 @@ final class Bus {
         return Int(addr & 0x07FF)
     }
     
+    @inline(__always)
     func cpuRead(address: UInt16) -> UInt8 {
-        if address >= 0x0200 && address <= 0x02FF {
-            let value = ram[ramIndex(address)]
-            
-            return value
-        }
-        
-        if address >= 0x6000 {
-            return cartridge.mapper.cpuRead(address: address)
-        }
-        
-        switch address {
-        case 0x0000...0x1FFF:
+        if address < 0x2000 {
             return ram[ramIndex(address)]
-        
-        case 0x2000...0x3FFF:
-            return ppu.cpuRead(address: ppuReg(address))
-        
-        case 0x4000...0x4013, 0x4015, 0x4017:
-            return apu.read(address: address)
-        
-        case 0x4014:
-            return 0
-        
-        case 0x4016:
+        } else if address < 0x4000 {
+            switch address & 0x0007 {
+            case 0x0002: return ppu.readStatus()
+            case 0x0004: return ppu.readOAMData()
+            case 0x0007: return ppu.readData()
+            default:     return 0
+            }
+        } else if address == 0x4015 {
+            return apu.readStatus()
+        } else if address == 0x4016 {
             return controller.read()
-        
-        case 0x4018...0x5FFF:
-            return 0
-        
-        default:
-            log("cpuRead from unmapped \(String(format: "$%04X", address))")
+        } else if address >= 0x6000 {
+            // --- OPTIMIZATION: Use the consolidated table for PRG/RAM area ---
+            return prgReadTable[Int(address)] (address)
+        } else {
             return 0
         }
     }
     
+    @inline(__always)
     func cpuWrite(address: UInt16, value: UInt8) {
-        
-        if address >= 0x6000 {
-            cartridge.mapper.cpuWrite(address: address, value: value)
-            return
-        }
-        
-        switch address {
-        case 0x0000...0x1FFF:
+        if address < 0x2000 {
             ram[ramIndex(address)] = value
-        
-        case 0x2000...0x3FFF:
-            ppu.cpuWrite(address: ppuReg(address), value: value)
-        
-        case 0x4000...0x4013, 0x4015, 0x4017:
-            apu.write(address: address, value: value)
-        
-        case 0x4014:
-            
-            ppu.oamDMA(bus: self, value: value)
+        } else if address < 0x4000 {
+            switch address & 0x0007 {
+            case 0x0000: ppu.writeCtrl(value)
+            case 0x0001: ppu.writeMask(value)
+            case 0x0003: ppu.writeOAMAddr(value)
+            case 0x0004: ppu.writeOAMData(value)
+            case 0x0005: ppu.writeScroll(value)
+            case 0x0006: ppu.writeAddr(value)
+            case 0x0007: ppu.writeData(value)
+            default:     break
+            }
+        } else if address <= 0x4013 || address == 0x4015 || address == 0x4017 {
+            apu.cpuWrite(address: address, value: value)
+        } else if address == 0x4014 {
             if let core = core {
                 core.dmaActive = true
                 core.dmaSourceAddr = UInt16(value) << 8
@@ -132,15 +171,11 @@ final class Bus {
                 let align = (core.cpu?.cycles ?? 0) % 2 == 1 ? 1 : 0
                 core.dmaCyclesLeft = 513 + align
             }
-        
-        case 0x4016:
+        } else if address == 0x4016 {
             controller.write(value: value)
-        
-        case 0x4018...0x5FFF:
-            break
-        
-        default:
-            log("cpuWrite to unmapped \(String(format: "$%04X", address)) = \(String(format: "$%02X", value))")
+        } else if address >= 0x6000 {
+            // --- OPTIMIZATION: Use the consolidated table for PRG/RAM area ---
+            prgWriteTable[Int(address)] (address, value)
         }
     }
     

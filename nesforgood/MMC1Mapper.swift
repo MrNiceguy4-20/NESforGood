@@ -43,16 +43,22 @@ final class MMC1Mapper: Mapper {
         self.chr = chr
         self.prgRAM = prgRAM
         self.mirroring = mirroring
-        self.shiftRegister = 0x10
-        self.control = 0x0C
-        self.chrBank0 = 0
-        self.chrBank1 = 0
-        self.prgBank = 0
-        self.prgRAMEnabled = true
+        reset()
         updateOffsets()
-        let (p0, p1) = computeCHRBankOffsets()
-        pendingChrBank0Offset = p0
-        pendingChrBank1Offset = p1
+    }
+    
+    func reset() {
+        shiftRegister = 0x10
+        applyControl(0x0C) // Mode 3: PRG fixed, vertical mirroring
+        chrBank0 = 0
+        chrBank1 = 0
+        prgBank = 0
+        prgRAMEnabled = true
+        prevA12 = 0
+        pendingChrBank0Offset = nil
+        pendingChrBank1Offset = nil
+        a12EdgePending = false
+        lastA12EdgeDot = 0
     }
 
     func applyControl(_ v: UInt8) {
@@ -70,7 +76,7 @@ final class MMC1Mapper: Mapper {
     func cpuWrite(address: UInt16, value: UInt8) {
         if (0x6000...0x7FFF).contains(address) {
             if prgRAMEnabled {
-                if var ram = prgRAM { ram.data[Int(address - 0x6000)] = value; prgRAM = ram }
+                if let ram = prgRAM { ram.data[Int(address - 0x6000)] = value; prgRAM = ram }
             }
             return
         }
@@ -95,6 +101,7 @@ final class MMC1Mapper: Mapper {
             }
             shiftRegister = 0x10
             let (pOff0, pOff1) = computeCHRBankOffsets()
+            // Queue CHR changes, wait for A12 (Phase 7 fix)
             pendingChrBank0Offset = pOff0
             pendingChrBank1Offset = pOff1
             updatePROffsets()
@@ -194,27 +201,22 @@ final class MMC1Mapper: Mapper {
 
     func ppuA12Observe(addr: UInt16, ppuDot: UInt64) {
         let a12: UInt8 = (addr & 0x1000) != 0 ? 1 : 0
-        if prevA12 == 0 && a12 == 1 && ppuDot >= lastA12EdgeDot + 8 {
-            a12EdgePending = true
-            lastA12EdgeDot = ppuDot
-        }
-        prevA12 = a12
-    }
-
-    func applyPendingBankSwitchIfSafe(ppuDot: UInt64) {
-        let cycle = Int(ppuDot % 341)
-        if cycle == 0 && a12EdgePending {
+        
+        // --- FIX: Simplify MMC1 A12 Logic, removing debounce for performance/simplicity ---
+        if prevA12 == 0 && a12 == 1 {
+            // Apply pending CHR switch on rising edge
             if let po0 = pendingChrBank0Offset, let po1 = pendingChrBank1Offset {
-                
                 chrBank0Offset = po0
                 chrBank1Offset = po1
                 pendingChrBank0Offset = nil
                 pendingChrBank1Offset = nil
             }
-            a12EdgePending = false
         }
+        prevA12 = a12
     }
-
+    
+    // Original applyPendingBankSwitchIfSafe function removed as it is now inlined in ppuA12Observe
+    
     func mapperIRQAsserted() -> Bool { return false }
     func mapperIRQClear() {}
 }

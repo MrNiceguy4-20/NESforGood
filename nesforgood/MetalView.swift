@@ -1,6 +1,6 @@
-
 import SwiftUI
 import MetalKit
+import Dispatch
 
 enum ScaleMode: String, CaseIterable, Identifiable {
     case integer = "Integer"
@@ -76,7 +76,7 @@ final class Coordinator: NSObject, MTKViewDelegate {
     private var vb: MTLBuffer?
     private var ub: MTLBuffer?
     private var srcTexture: MTLTexture?
-
+    
     var scaleMode: ScaleMode = .integer
     var shaderMode: ShaderMode = .none
     var gamma: Float = 1.0
@@ -87,6 +87,7 @@ final class Coordinator: NSObject, MTKViewDelegate {
 
     private let texSize = SIMD2<Float>(256, 240)
     private var lastTime: CFTimeInterval = CACurrentMediaTime()
+    private var lastCartridgeID: ObjectIdentifier? = nil
 
     func configure(view: MTKView, emulator: EmulatorCore, scaleMode: ScaleMode, shaderMode: ShaderMode) {
         self.emulator = emulator
@@ -115,24 +116,38 @@ final class Coordinator: NSObject, MTKViewDelegate {
 
         view.delegate = self
     }
-
+    
     func draw(in view: MTKView) {
+        // No manual dispatch or queueing here. The system calls this.
+
+        let currentCartridgeID = emulator.cartridge.map { ObjectIdentifier($0) }
+        
+        if lastCartridgeID != currentCartridgeID {
+            srcTexture = nil
+            lastCartridgeID = currentCartridgeID
+        }
+        
         guard emulator.isRunning,
               let drawable = view.currentDrawable,
               let passDesc = view.currentRenderPassDescriptor,
-              let device = view.device else { return }
+              let device = view.device else {
+            return
+        }
         if !vsyncEnabled {
             let now = CACurrentMediaTime()
             let target = 1.0 / Double(max(1, frameLimit))
-            if now - lastTime < target { return } 
+            if now - lastTime < target { return }
             lastTime = now
         }
-
-        emulator.runOneFrame()
-        if srcTexture == nil {
-            srcTexture = emulator.ppu?.makeTexture(device: device)
-        } else if let ppu = emulator.ppu, let tex = srcTexture {
-            ppu.copyFrame(to: tex)
+        
+        if let ppu = emulator.ppu {
+            if srcTexture == nil {
+                srcTexture = ppu.makeTexture(device: device)
+            } else if let tex = srcTexture {
+                // This call is protected by the PPU's lock, which will
+                // not block the Emulator Thread due to the trylock.
+                ppu.copyFrame(to: tex)
+            }
         }
         guard let source = srcTexture else { return }
 
@@ -187,11 +202,10 @@ final class Coordinator: NSObject, MTKViewDelegate {
         enc.setVertexBuffer(vb, offset: 0, index: 0)
         if let ub = ub { enc.setFragmentBuffer(ub, offset: 0, index: 1) }
         enc.setFragmentTexture(source, index: 0)
-        enc.setFragmentSamplerState(sampler, index: 0)
+        enc.setFragmentSamplerState(sampler, index:0)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         enc.endEncoding()
         cmd.present(drawable)
         cmd.commit()
     }
 }
-

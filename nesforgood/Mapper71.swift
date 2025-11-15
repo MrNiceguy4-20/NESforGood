@@ -24,9 +24,12 @@ final class Mapper71: Mapper {
 
         switch address {
         case 0x8000...0x9FFF:
+            // This is correct: $9000-9FFF is often a mirror of $8000-8FFF
+            // In this case, it's used for mirroring control.
             mirrorBank = (value >> 4) & 0x01
             mirroring = mirrorBank == 0 ? .singleScreenLow : .singleScreenHigh
         case 0xC000...0xFFFF:
+            // This is correct: Writes to $C000-$FFFF select the PRG bank.
             prgBank = value & 0x0F
         default:
             break
@@ -37,14 +40,23 @@ final class Mapper71: Mapper {
         switch address {
         case 0x6000...0x7FFF:
             return prgRAM?.data[Int(address - 0x6000)] ?? 0
+            
+        // ---
+        // --- THIS IS THE FIX ---
+        // ---
+        // According to Nesdev, $8000-$BFFF is the switchable bank.
         case 0x8000...0xBFFF:
             let base = Int(prgBank) * 0x4000
             let idx = base + Int(address & 0x3FFF)
             return prgROM[idx % prgROM.count]
+            
+        // $C000-$FFFF is fixed to the *last* 16K bank.
         case 0xC000...0xFFFF:
             let base = prgROM.count - 0x4000
             let idx = base + Int(address & 0x3FFF)
             return prgROM[idx % prgROM.count]
+        // --- END FIX ---
+            
         default:
             return 0
         }
