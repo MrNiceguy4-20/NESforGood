@@ -696,18 +696,19 @@ final class PPU {
     }
 
     func makeTexture(device: MTLDevice) -> MTLTexture? {
-        let desc = MTLTextureDescriptor()
-        desc.pixelFormat = .bgra8Unorm
-        desc.width = max(1, fbW)
-        desc.height = max(1, fbH)
-        desc.storageMode = .managed
-        desc.usage = [.shaderRead, .renderTarget]
+        let desc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm,
+            width: max(1, fbW),
+            height: max(1, fbH),
+            mipmapped: false
+        )
+        desc.storageMode = .shared
+        desc.usage = [.shaderRead]
 
         guard let texture = device.makeTexture(descriptor: desc) else {
             assertionFailure("PPU.makeTexture(): failed to create Metal texture")
             return nil
         }
-
         return texture
     }
 
@@ -717,19 +718,15 @@ final class PPU {
         os_unfair_lock_unlock(&fbLock)
 
         let region = MTLRegionMake2D(0, 0, fbW, fbH)
-        texture.replace(region: region,
-                        mipmapLevel: 0,
-                        withBytes: ptr,
-                        bytesPerRow: fbW * MemoryLayout<UInt32>.size)
-
-        if let queue = texture.device.makeCommandQueue(),
-           let cmd = queue.makeCommandBuffer(),
-           let blit = cmd.makeBlitCommandEncoder() {
-            blit.synchronize(resource: texture)
-            blit.endEncoding()
-            cmd.commit()
-        }
+        texture.replace(
+            region: region,
+            mipmapLevel: 0,
+            withBytes: ptr,
+            bytesPerRow: fbW * MemoryLayout<UInt32>.size
+        )
     }
+
+
 
     func clearFrame() {
         os_unfair_lock_lock(&fbLock)
