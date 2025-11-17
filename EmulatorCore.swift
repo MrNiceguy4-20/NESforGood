@@ -3,6 +3,9 @@ import SwiftUI
 import Observation
 import AVFoundation
 import Darwin
+import AudioUnit
+import CoreAudio
+import AudioToolbox
 
 @Observable
 class EmulatorCore {
@@ -49,6 +52,8 @@ class EmulatorCore {
 
     private var engine: AVAudioEngine?
     private var sourceNode: AVAudioSourceNode?
+    private var eqNode: AVAudioUnitEQ?
+    private var limiterNode: AVAudioUnit?
     private var audioSampleRate: Double = 44_100
     // Initial buffer, replaced on start() based on audioLatencyLevel
     private var audioRB = CircularFloatBuffer(capacity: 44_100 * 4)
@@ -57,6 +62,8 @@ class EmulatorCore {
     private var apuToAudioStep: Double = 1_789_773.0 / 44_100.0
     private var apuToAudioAccum: Double = 0.0
     private var lastAudioSample: Float = 0.0
+    private var smoothedAudioSample: Float = 0.0
+    private var maxSampleDelta: Float = 0.08
 
     // MARK: - DMA
 
@@ -182,9 +189,20 @@ class EmulatorCore {
     }
 
     private func configureAudioEngineIfNeeded() {
+        let configureBlock = { [weak self] in
+            self?.configureAudioEngineOnMainThread()
+        }
+
+        if Thread.isMainThread {
+            configureBlock()
+        } else {
+            DispatchQueue.main.sync(execute: configureBlock)
+        }
+    }
+
+    private func configureAudioEngineOnMainThread() {
         // Configure audio engine if not already running
         if engine == nil {
-            // FIX: Explicitly set the engine's render queue QoS to match or exceed the emulation queue QoS (.userInitiated)
             let engine = AVAudioEngine()
 
             // Detect hardware output sample rate
@@ -229,8 +247,8 @@ class EmulatorCore {
                 return noErr
             }
 
-            engine.attach(src)
-            engine.connect(src, to: engine.mainMixerNode, format: format)
+            buildAudioChain(engine: engine, source: src, format: format)
+
             do {
                 // FIX: Setting the engine's render thread to a high priority to minimize blocking.
                 try engine.start()
@@ -246,6 +264,39 @@ class EmulatorCore {
             apu?.setOutputSampleRate(Float(audioSampleRate))
             updateAudioResampleStep()
         }
+    }
+
+    private func buildAudioChain(engine: AVAudioEngine, source: AVAudioSourceNode, format: AVAudioFormat) {
+        let eq = AVAudioUnitEQ(numberOfBands: 1)
+        if let band = eq.bands.first {
+            band.filterType = .lowPass
+            band.frequency = 14_000
+            band.bandwidth = 0.5
+            band.bypass = false
+            band.gain = 0
+        }
+
+        // ---- Peak Limiter AU without manual parameters ----
+        let limiterDesc = AudioComponentDescription(
+            componentType: kAudioUnitType_Effect,
+            componentSubType: kAudioUnitSubType_PeakLimiter,
+            componentManufacturer: kAudioUnitManufacturer_Apple,
+            componentFlags: 0,
+            componentFlagsMask: 0
+        )
+
+        let limiter = AVAudioUnitEffect(audioComponentDescription: limiterDesc)
+
+        engine.attach(source)
+        engine.attach(eq)
+        engine.attach(limiter)
+        engine.connect(source, to: eq, format: format)
+        engine.connect(eq, to: limiter, format: format)
+        engine.connect(limiter, to: engine.mainMixerNode, format: format)
+        engine.mainMixerNode.outputVolume = 0.8
+
+        self.eqNode = eq
+        self.limiterNode = limiter
     }
 
     private func warmUpChipsForStableStart() {
@@ -266,7 +317,7 @@ class EmulatorCore {
             guard let self = self else { return }
             self.emulationThread = Thread.current
             Thread.current.name = "NESforGood.Emulation"
-            
+
             // FIX: Setting thread priority is usually redundant when using QoS, but we keep it high.
             Thread.current.threadPriority = 0.95
 
@@ -305,6 +356,8 @@ class EmulatorCore {
         }
         engine = nil
         sourceNode = nil
+        eqNode = nil
+        limiterNode = nil
 
         ppu?.clearFrame()
         ppu?.frameReady = false
@@ -312,6 +365,9 @@ class EmulatorCore {
 
         // Persist SRAM if needed, but keep cartridge/components
         cartridge?.saveBatteryRAM()
+
+        smoothedAudioSample = 0.0
+        lastAudioSample = 0.0
     }
 
     func reset() {
@@ -355,7 +411,7 @@ class EmulatorCore {
             ppu.tick(); ppu.tick(); ppu.tick()
 
             // Mapper handles IRQs via PPU callbacks (MMC3) - now handled by PPU
-            
+
             apu?.tick()
 
             // Downsample APU to audio sample rate
@@ -433,12 +489,14 @@ class EmulatorCore {
     // MARK: - Audio Helpers
 
     private func safeAudioPush(_ sample: Float) {
-        lastAudioSample = sample
-        audioRB.push(sample)
+        let filtered = smoothAndLimit(sample)
+        lastAudioSample = filtered
+        audioRB.push(filtered)
     }
 
     private func updateAudioResampleStep() {
         apuToAudioStep = apuHz / audioSampleRate
+        maxSampleDelta = Float(0.08 * (44_100.0 / max(8_000.0, audioSampleRate)))
     }
 
     private func prefillAudioBuffer() {
@@ -446,9 +504,26 @@ class EmulatorCore {
         let framesToFill = min(desired, max(0, audioRB.availableToWrite()))
         if framesToFill == 0 { return }
         let seed = lastAudioSample
+        smoothedAudioSample = seed
         for _ in 0..<framesToFill {
             audioRB.push(seed)
         }
+    }
+
+    private func smoothAndLimit(_ rawSample: Float) -> Float {
+        // Clamp the raw sample just in case upstream filters misbehave
+        var clamped = max(-1.25, min(1.25, rawSample))
+        let delta = clamped - smoothedAudioSample
+        if delta > maxSampleDelta {
+            clamped = smoothedAudioSample + maxSampleDelta
+        } else if delta < -maxSampleDelta {
+            clamped = smoothedAudioSample - maxSampleDelta
+        }
+        smoothedAudioSample = clamped
+
+        // Soft clip with a tanh curve to avoid hard digital clipping artifacts
+        let limited = Float(tanh(Double(clamped) * 1.15)) * 0.92
+        return limited
     }
 
     // MARK: - Frame Extraction
