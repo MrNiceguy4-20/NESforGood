@@ -41,6 +41,7 @@ class TriangleChannel {
         }
     }
 
+    @inline(__always)
     func clockTimer() {
         if timer == 0 {
             timer = period
@@ -52,12 +53,14 @@ class TriangleChannel {
         }
     }
 
+    @inline(__always)
     func clockLinear() {
         if linearReload { linearCounter = linearLoad }
         else if linearCounter > 0 { linearCounter &-= 1 }
         if !lengthHalt { linearReload = false }
     }
 
+    @inline(__always)
     func clockLength() {
         if !lengthHalt && lengthCounter > 0 { lengthCounter &-= 1 }
     }

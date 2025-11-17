@@ -75,6 +75,7 @@ class PulseChannel {
         }
     }
 
+    @inline(__always)
     func clockTimer() {
         if timer == 0 {
             timer = period
@@ -84,6 +85,7 @@ class PulseChannel {
         }
     }
 
+    @inline(__always)
     func clockEnvelope() {
         if envelopeStart {
             decayLevel = 15
@@ -98,6 +100,7 @@ class PulseChannel {
         }
     }
 
+    @inline(__always)
     func clockSweep() {
         let targetInt = calculateTarget()
         let muted = isMuted()
@@ -114,6 +117,7 @@ class PulseChannel {
         }
     }
 
+    @inline(__always)
     private func calculateTarget() -> Int {
         let shifted = Int(period) >> Int(sweepShift)
         var change = shifted
@@ -126,11 +130,13 @@ class PulseChannel {
         return targetInt
     }
 
+    @inline(__always)
     func isMuted() -> Bool {
         let targetInt = calculateTarget()
         return period < 8 || targetInt > 0x7FF
     }
 
+    @inline(__always)
     func clockLength() {
         if !lengthHalt && lengthCounter > 0 { lengthCounter &-= 1 }
     }

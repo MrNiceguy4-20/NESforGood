@@ -24,7 +24,6 @@ final class DMCChannel {
     
     func reset() {
         irqFlag = false
-        // Note: Enabling/Disabling is handled by $4015$, not reset.
     }
     
     func write(reg: UInt8, value: UInt8) {
@@ -36,7 +35,7 @@ final class DMCChannel {
             if !irqEnable { irqFlag = false }
         case 1:
             directLoad = value & 0x7F
-            output = directLoad // Direct load sets output immediately (Phase 8 fix)
+            output = directLoad
         case 2:
             sampleAddress = 0xC000 + UInt16(value) * 64
         case 3:
@@ -52,7 +51,6 @@ final class DMCChannel {
         bitCount       = 8
         timer          = DMCChannel.rateTable[Int(rateIndex)]
         silence        = true
-        // output is NOT reset here
         irqFlag        = false
     }
     
@@ -74,7 +72,7 @@ final class DMCChannel {
         }
     }
     
-        func clockTimer() {
+    func clockTimer() {
         if timer == 0 {
             timer = DMCChannel.rateTable[Int(rateIndex)]
 
@@ -101,5 +99,4 @@ final class DMCChannel {
             timer &-= 1
         }
     }
-
 }

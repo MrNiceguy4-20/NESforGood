@@ -10,9 +10,9 @@ class EmulatorCore {
     // MARK: - Nested Types
 
     enum AudioLatency {
-        case low      // ~50ms
-        case medium   // ~100ms (default)
-        case high     // ~200ms
+        case low       // ~50ms
+        case medium    // ~100ms (default)
+        case high      // ~200ms
     }
 
     // MARK: - Public Configuration
@@ -25,7 +25,8 @@ class EmulatorCore {
 
     // MARK: - Timing
 
-    private var lastFrameTick: UInt64 = 0
+    private var nextFrameTick: UInt64 = 0
+    private var frameDurationTicks: UInt64 = 0
     private var timebaseInfo = mach_timebase_info_data_t(numer: 0, denom: 0)
 
     // MARK: - Public State
@@ -81,7 +82,8 @@ class EmulatorCore {
 
     init() {
         mach_timebase_info(&timebaseInfo)
-        lastFrameTick = mach_absolute_time()
+        updateFrameDurationTicks()
+        resetFrameSync()
     }
 
     deinit {
@@ -120,10 +122,12 @@ class EmulatorCore {
 
     func setFrameLimit(_ fps: Int) {
         self.desiredFPS = max(0, fps)
+        updateFrameDurationTicks()
     }
 
     func setTurboEnabled(_ enabled: Bool) {
         turboEnabled = enabled
+        resetFrameSync()
     }
 
     func setAudioLatency(_ level: AudioLatency) {
@@ -164,7 +168,7 @@ class EmulatorCore {
 
         let startWork = { [weak self] in
             guard let self = self else { return }
-            self.lastFrameTick = mach_absolute_time()
+            self.resetFrameSync()
             self.configureAudioEngineIfNeeded()
             self.warmUpChipsForStableStart()
             self.launchEmulationLoop()
@@ -267,7 +271,7 @@ class EmulatorCore {
             Thread.current.threadPriority = 0.95
 
             // Initialize frame tick here, just before starting the loop
-            self.lastFrameTick = mach_absolute_time()
+            self.resetFrameSync()
 
             while self.isRunning {
                 autoreleasepool {
@@ -418,26 +422,12 @@ class EmulatorCore {
 
         // --- Turbo Mode: no frame pacing at all ---
         if turboEnabled {
-            lastFrameTick = mach_absolute_time()
+            resetFrameSync()
             return
         }
 
         // --- Normal frame pacing with vsync hint, using mach time ---
-        if vsyncEnabledHint && desiredFPS > 0 {
-            let now = mach_absolute_time()
-            let targetNanos = UInt64(1_000_000_000) / UInt64(desiredFPS)
-            let targetTicks = nanosToAbsoluteTime(targetNanos)
-            let elapsedTicks = now &- lastFrameTick
-
-            if elapsedTicks < targetTicks {
-                let deadline = lastFrameTick &+ targetTicks
-                mach_wait_until(deadline)
-            }
-
-            lastFrameTick = mach_absolute_time()
-        } else {
-            lastFrameTick = mach_absolute_time()
-        }
+        paceFrameIfNeeded()
     }
 
     // MARK: - Audio Helpers
@@ -474,6 +464,55 @@ class EmulatorCore {
 // MARK: - Timing Helpers
 
 extension EmulatorCore {
+    private func updateFrameDurationTicks() {
+        guard desiredFPS > 0 else {
+            frameDurationTicks = 0
+            resetFrameSync()
+            return
+        }
+        let nanos = UInt64(1_000_000_000) / UInt64(desiredFPS)
+        frameDurationTicks = nanosToAbsoluteTime(nanos)
+        resetFrameSync()
+    }
+
+    private func resetFrameSync() {
+        nextFrameTick = mach_absolute_time()
+    }
+
+    private func paceFrameIfNeeded() {
+        guard vsyncEnabledHint, frameDurationTicks > 0 else {
+            resetFrameSync()
+            return
+        }
+
+        var targetTick = nextFrameTick
+        if targetTick == 0 {
+            targetTick = mach_absolute_time()
+        }
+        targetTick &+= frameDurationTicks
+
+        var now = mach_absolute_time()
+        if now < targetTick {
+            mach_wait_until(targetTick)
+            now = targetTick
+        } else {
+            let behind = now &- targetTick
+            if behind >= frameDurationTicks {
+                let maxDrift = frameDurationTicks &* 8
+                if behind > maxDrift {
+                    targetTick = now
+                } else {
+                    let remainder = behind % frameDurationTicks
+                    targetTick = now &- remainder
+                }
+            } else {
+                targetTick = now
+            }
+        }
+
+        nextFrameTick = targetTick
+    }
+
     fileprivate func nanosToAbsoluteTime(_ nanos: UInt64) -> UInt64 {
         if timebaseInfo.denom == 0 || timebaseInfo.numer == 0 { return nanos }
         return nanos &* UInt64(timebaseInfo.denom) / UInt64(timebaseInfo.numer)
