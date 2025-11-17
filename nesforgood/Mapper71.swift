@@ -4,71 +4,80 @@ final class Mapper71: Mapper {
     let prgRAM: ExtRAM?
     private(set) var mirroring: Mirroring
 
-    private var prgBank: UInt8 = 0
-    private var mirrorBank: UInt8 = 0
+    private let prgBankSize = 16 * 1024
+    private let prgBankMask: Int
+    private let chrSize: Int
+    private let hasChrRAM: Bool
+
+    private var bankSelect: UInt8 = 0
 
     init(prgROM: [UInt8], chr: CHRMemory, prgRAM: ExtRAM?, mirroring: Mirroring) {
         self.prgROM = prgROM
         self.chr = chr
         self.prgRAM = prgRAM
         self.mirroring = mirroring
-        self.prgBank = 0
-        self.mirrorBank = 0
+
+        let prgBanks = max(1, prgROM.count / prgBankSize)
+        self.prgBankMask = prgBanks - 1
+
+        self.chrSize = chr.data.count
+        self.hasChrRAM = chr.isRAM
     }
 
-    func cpuWrite(address: UInt16, value: UInt8) {
-        if (0x6000...0x7FFF).contains(address) {
-            prgRAM?.data[Int(address - 0x6000)] = value
-            return
-        }
-
-        switch address {
-        case 0x8000...0x9FFF:
-            // This is correct: $9000-9FFF is often a mirror of $8000-8FFF
-            // In this case, it's used for mirroring control.
-            mirrorBank = (value >> 4) & 0x01
-            mirroring = mirrorBank == 0 ? .singleScreenLow : .singleScreenHigh
-        case 0xC000...0xFFFF:
-            // This is correct: Writes to $C000-$FFFF select the PRG bank.
-            prgBank = value & 0x0F
-        default:
-            break
-        }
-    }
-
+    @inline(__always)
     func cpuRead(address: UInt16) -> UInt8 {
         switch address {
         case 0x6000...0x7FFF:
-            return prgRAM?.data[Int(address - 0x6000)] ?? 0
-            
-        // ---
-        // --- THIS IS THE FIX ---
-        // ---
-        // According to Nesdev, $8000-$BFFF is the switchable bank.
+            if let ram = prgRAM { return ram.data[Int(address &- 0x6000)] }
+            return 0
+
         case 0x8000...0xBFFF:
-            let base = Int(prgBank) * 0x4000
-            let idx = base + Int(address & 0x3FFF)
-            return prgROM[idx % prgROM.count]
-            
-        // $C000-$FFFF is fixed to the *last* 16K bank.
+            guard !prgROM.isEmpty else { return 0 }
+            let bank = Int(bankSelect & 0x0F) & prgBankMask
+            let base = bank * prgBankSize
+            let off  = Int(address &- 0x8000)
+            return prgROM[(base &+ off) % prgROM.count]
+
         case 0xC000...0xFFFF:
-            let base = prgROM.count - 0x4000
-            let idx = base + Int(address & 0x3FFF)
-            return prgROM[idx % prgROM.count]
-        // --- END FIX ---
-            
+            guard !prgROM.isEmpty else { return 0 }
+            let base = prgROM.count - prgBankSize
+            let off  = Int(address &- 0xC000)
+            return prgROM[base &+ off]
+
         default:
             return 0
         }
     }
 
-    func ppuRead(address: UInt16) -> UInt8 {
-        return chr.data[Int(address & 0x1FFF) % chr.data.count]
-    }
-
-    func ppuWrite(address: UInt16, value: UInt8) {
-        if chr.isRAM {
-            chr.data[Int(address & 0x1FFF) % chr.data.count] = value
+    @inline(__always)
+    func cpuWrite(address: UInt16, value: UInt8) {
+        if (0x6000...0x7FFF).contains(address) {
+            prgRAM?.data[Int(address &- 0x6000)] = value
+            return
+        }
+        if address >= 0xC000 {
+            bankSelect = value
+            let mirrorBit = (value >> 7) & 1
+            mirroring = (mirrorBit == 0) ? .singleScreenLow : .singleScreenHigh
         }
     }
+
+    @inline(__always)
+    func ppuRead(address: UInt16) -> UInt8 {
+        guard chrSize > 0 else { return 0 }
+        let idx = Int(address & 0x1FFF) % chrSize
+        return chr.data[idx]
+    }
+
+    @inline(__always)
+    func ppuWrite(address: UInt16, value: UInt8) {
+        guard hasChrRAM, chrSize > 0 else { return }
+        let idx = Int(address & 0x1FFF) % chrSize
+        chr.data[idx] = value
+    }
+
+    @inline(__always) func ppuA12Observe(addr: UInt16, ppuDot: UInt64) {}
+    @inline(__always) func mapperIRQAsserted() -> Bool { false }
+    @inline(__always) func mapperIRQClear() {}
+    @inline(__always) func clockScanlineCounter() {}
 }

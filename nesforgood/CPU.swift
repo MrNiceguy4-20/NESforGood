@@ -12,7 +12,7 @@ final class CPU {
 
     var cycles: UInt64 = 0
     private var stallIRQThisInstruction = false
-    
+
     // ---
     // --- OPTIMIZATION: The Opcode Table ---
     // ---
@@ -34,7 +34,7 @@ final class CPU {
     }
 
     // MARK: - Memory Access
-    
+
     @inline(__always) private func read(address: UInt16) -> UInt8 {
         bus.cpuRead(address: address)
     }
@@ -50,7 +50,7 @@ final class CPU {
     }
 
     // MARK: - Flags
-    
+
     enum Flag: UInt8 {
         case C = 0b00000001 // Carry
         case Z = 0b00000010 // Zero
@@ -65,16 +65,16 @@ final class CPU {
     @inline(__always) private func setFlag(_ f: Flag, _ on: Bool) {
         if on { P |= f.rawValue } else { P &= ~f.rawValue }
     }
-    
+
     @inline(__always) private func getFlag(_ f: Flag) -> Bool { (P & f.rawValue) != 0 }
-    
+
     @inline(__always) private func setZN(_ v: UInt8) {
         setFlag(.Z, v == 0)
         setFlag(.N, (v & 0x80) != 0)
     }
 
     // MARK: - Stack Operations
-    
+
     @inline(__always) private func push(_ v: UInt8) {
         write(address: 0x0100 | UInt16(SP), value: v)
         SP &-= 1
@@ -99,37 +99,37 @@ final class CPU {
     // MARK: - Addressing Modes
     // (These are now inlined into the table, but we keep
     //  them here for the ALU functions that are shared)
-    
+
     @inline(__always) private func immediate() -> UInt8 {
         let v = read(address: PC)
         PC &+= 1
         return v
     }
-    
+
     @inline(__always) private func zeroPage() -> UInt16 {
         let a = UInt16(read(address: PC))
         PC &+= 1
         return a
     }
-    
+
     @inline(__always) private func zeroPageX() -> UInt16 {
         let b = read(address: PC)
         PC &+= 1
         return UInt16((b &+ X) & 0xFF)
     }
-    
+
     @inline(__always) private func zeroPageY() -> UInt16 {
         let b = read(address: PC)
         PC &+= 1
         return UInt16((b &+ Y) & 0xFF)
     }
-    
+
     @inline(__always) private func absolute() -> UInt16 {
         let a = readWord(address: PC)
         PC &+= 2
         return a
     }
-    
+
     @inline(__always) private func absoluteX() -> (UInt16, Bool) {
         let base = readWord(address: PC)
         PC &+= 2
@@ -137,7 +137,7 @@ final class CPU {
         let pageCross = (addr & 0xFF00) != (base & 0xFF00)
         return (addr, pageCross)
     }
-    
+
     @inline(__always) private func absoluteY() -> (UInt16, Bool) {
         let base = readWord(address: PC)
         PC &+= 2
@@ -145,19 +145,19 @@ final class CPU {
         let pageCross = (addr & 0xFF00) != (base & 0xFF00)
         return (addr, pageCross)
     }
-    
+
     @inline(__always) private func indirect() -> UInt16 {
         let ptr = readWord(address: PC)
         PC &+= 2
-        
+
         let loAddr = ptr
         let hiAddr = (ptr & 0xFF00) | UInt16(UInt8((ptr & 0x00FF) &+ 1))
-        
+
         let lo = UInt16(read(address: loAddr))
         let hi = UInt16(read(address: hiAddr)) << 8
         return hi | lo
     }
-    
+
     @inline(__always) private func indirectX() -> UInt16 {
         let zp = (read(address: PC) &+ X) & 0xFF
         PC &+= 1
@@ -165,7 +165,7 @@ final class CPU {
         let hi = UInt16(read(address: UInt16((zp &+ 1) & 0xFF))) << 8
         return hi | lo
     }
-    
+
     @inline(__always) private func indirectY() -> (UInt16, Bool) {
         let zp = read(address: PC)
         PC &+= 1
@@ -176,7 +176,7 @@ final class CPU {
         let pageCross = (addr & 0xFF00) != (base & 0xFF00)
         return (addr, pageCross)
     }
-    
+
     @inline(__always) private func relative() -> (UInt16, Bool) {
         let off = Int8(bitPattern: read(address: PC))
         PC &+= 1
@@ -198,7 +198,7 @@ final class CPU {
         A = r
         setZN(A)
     }
-    
+
     @inline(__always) private func sbc(_ v: UInt8) {
         adc(~v)
     }
@@ -206,7 +206,7 @@ final class CPU {
     @inline(__always) private func and(_ v: UInt8) { A &= v; setZN(A) }
     @inline(__always) private func ora(_ v: UInt8) { A |= v; setZN(A) }
     @inline(__always) private func eor(_ v: UInt8) { A ^= v; setZN(A) }
-    
+
     @inline(__always) private func cmp(_ r: UInt8, _ v: UInt8) {
         let t = r &- v
         setFlag(.C, r >= v)
@@ -214,7 +214,7 @@ final class CPU {
     }
 
     // MARK: - Legal Instructions (Read-Modify-Write)
-    
+
     @inline(__always) private func aslA() { setFlag(.C, (A & 0x80) != 0); A &<<= 1; setZN(A) }
     @inline(__always) private func lsrA() { setFlag(.C, (A & 0x01) != 0); A &>>= 1; setFlag(.N, false); setFlag(.Z, A == 0) }
     @inline(__always) private func rolA() { let c: UInt8 = getFlag(.C) ? 1 : 0; let newC = (A & 0x80) != 0; A = (A &<< 1) | c; setFlag(.C, newC); setZN(A) }
@@ -224,7 +224,7 @@ final class CPU {
     @inline(__always) private func lsrM(_ a: UInt16) { var v = read(address: a); setFlag(.C, (v & 0x01) != 0); v &>>= 1; write(address: a, value: v); setFlag(.N, false); setFlag(.Z, v == 0) }
     @inline(__always) private func rolM(_ a: UInt16) { var v = read(address: a); let cin: UInt8 = getFlag(.C) ? 1 : 0; let newC = (v & 0x80) != 0; v = (v &<< 1) | cin; write(address: a, value: v); setFlag(.C, newC); setZN(v) }
     @inline(__always) private func rorM(_ a: UInt16) { var v = read(address: a); let cin: UInt8 = getFlag(.C) ? 0x80 : 0; let newC = (v & 0x01) != 0; v = (v &>> 1) | cin; write(address: a, value: v); setFlag(.C, newC); setZN(v) }
-    
+
     @inline(__always) private func incM(_ a: UInt16) { var v = read(address: a); v &+= 1; write(address: a, value: v); setZN(v) }
     @inline(__always) private func decM(_ a: UInt16) { var v = read(address: a); v &-= 1; write(address: a, value: v); setZN(v) }
 
@@ -270,7 +270,7 @@ final class CPU {
         P = f
         PC = popWord()
     }
-    
+
     // ---
     // --- KIL/JAM (default illegal opcode) ---
     // ---
@@ -280,40 +280,40 @@ final class CPU {
     }
 
     // MARK: - CPU Step
-    
+
     @discardableResult
     func step() -> Int {
-        
+
         if let core = bus.core, core.dmaActive {
             if core.dmaCyclesLeft > 0 {
                 return 1 // DMA steals the cycle, but we don't increment CPU.cycles
             }
         }
-        
+
         if stallIRQThisInstruction {
             stallIRQThisInstruction = false
         }
 
         let opcode = read(address: PC)
         PC &+= 1
-        
+
         // ---
         // --- OPTIMIZATION: Execute from the table ---
         // ---
         let c = opcodeTable[Int(opcode)]()
-        
+
         cycles &+= UInt64(c)
         return c
     }
-    
+
     // ---
     // --- OPTIMIZATION: This function builds the 256-entry opcode table ---
     // ---
     private func buildOpcodeTable() -> [() -> Int] {
         var table: [() -> Int] = Array(repeating: { self.opKIL() }, count: 256)
-        
+
         // --- Load/Store Operations ---
-            
+
         // LDA
         table[0xA9] = { self.A = self.immediate(); self.setZN(self.A); return 2 }
         table[0xA5] = { self.A = self.read(address: self.zeroPage()); self.setZN(self.A); return 3 }
@@ -510,7 +510,7 @@ final class CPU {
                 return 2
             }
         }
-        
+
         table[0x90] = branch(.C, false) // BCC
         table[0xB0] = branch(.C, true)  // BCS
         table[0xF0] = branch(.Z, true)  // BEQ
@@ -535,23 +535,23 @@ final class CPU {
         // ---
         // --- Illegal Opcodes ---
         // ---
-        
+
         // --- Illegal NOPs ---
         let nop1: () -> Int = { return 2 }
         table[0x1A] = nop1; table[0x3A] = nop1; table[0x5A] = nop1; table[0x7A] = nop1; table[0xDA] = nop1; table[0xFA] = nop1
-        
+
         let nop2: () -> Int = { self.PC &+= 1; return 2 } // imm
         table[0x80] = nop2; table[0x82] = nop2; table[0x89] = nop2; table[0xC2] = nop2; table[0xE2] = nop2
-        
+
         let nop2zp: () -> Int = { _ = self.zeroPage(); return 3 } // zp
         table[0x04] = nop2zp; table[0x44] = nop2zp; table[0x64] = nop2zp
-        
+
         let nop2zpx: () -> Int = { _ = self.zeroPageX(); return 4 } // zp,x
         table[0x14] = nop2zpx; table[0x34] = nop2zpx; table[0x54] = nop2zpx; table[0x74] = nop2zpx; table[0xD4] = nop2zpx; table[0xF4] = nop2zpx
-        
+
         let nop3abs: () -> Int = { _ = self.absolute(); return 4 } // abs
         table[0x0C] = nop3abs
-        
+
         let nop3absx: () -> Int = { let (addr, cross) = self.absoluteX(); _ = self.read(address: addr); return 4 + (cross ? 1 : 0) } // abs,x
         table[0x1C] = nop3absx; table[0x3C] = nop3absx; table[0x5C] = nop3absx; table[0x7C] = nop3absx; table[0xDC] = nop3absx; table[0xFC] = nop3absx
 
@@ -563,14 +563,14 @@ final class CPU {
         table[0xBF] = { let (addr, cross) = self.absoluteY(); opLAX(addr); return 4 + (cross ? 1 : 0) }
         table[0xA3] = { opLAX(self.indirectX()); return 6 }
         table[0xB3] = { let (addr, cross) = self.indirectY(); opLAX(addr); return 5 + (cross ? 1 : 0) }
-        
+
         // --- SAX (STA & STX) ---
         let opSAX: (UInt16) -> () = { addr in self.write(address: addr, value: self.A & self.X) }
         table[0x87] = { opSAX(self.zeroPage()); return 3 }
         table[0x97] = { opSAX(self.zeroPageY()); return 4 }
         table[0x8F] = { opSAX(self.absolute()); return 4 }
         table[0x83] = { opSAX(self.indirectX()); return 6 }
-        
+
         // --- DCP (DEC + CMP) ---
         let opDCP: (UInt16) -> () = { addr in var v = self.read(address: addr); v &-= 1; self.write(address: addr, value: v); self.cmp(self.A, v) }
         table[0xC7] = { opDCP(self.zeroPage()); return 5 }
@@ -637,7 +637,7 @@ final class CPU {
         table[0x4B] = { let v = self.immediate(); self.and(v); self.lsrA(); return 2 } // ALR
         table[0x6B] = { let v = self.immediate(); self.and(v); self.rorA(); return 2 } // ARR
         table[0xCB] = { let v = self.immediate(); let t = (self.A & self.X); let r = t &- v; self.setFlag(.C, t >= v); self.X = r; self.setZN(self.X); return 2 } // AXS
-        
+
         // --- Other Misc Illegals ---
         table[0xBB] = { let (addr, cross) = self.absoluteY(); let v = self.read(address: addr) & self.SP; self.SP = v; self.A = v; self.X = v; self.setZN(v); return 4 + (cross ? 1 : 0) } // LAS
         table[0x9B] = { let (base, _) = self.absoluteY(); let addr = base; let hiPlus1 = UInt8(((base >> 8) & 0xFF) &+ 1); self.SP = self.A & self.X; let v = self.SP & hiPlus1; self.write(address: addr, value: v); return 5 } // TAS

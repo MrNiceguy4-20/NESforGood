@@ -11,10 +11,7 @@ struct NESEmulatorApp: App {
         WindowGroup {
             ContentView()
                 .frame(minWidth: 800, minHeight: 600)
-                .onReceive(NotificationCenter.default.publisher(for: .emulatorLoadROM)) { _ in
-                }
-                .onReceive(NotificationCenter.default.publisher(for: .emulatorReset)) { _ in
-                }
+                
         }
         .commands {
             CommandMenu("Emulator") {

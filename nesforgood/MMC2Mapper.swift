@@ -4,97 +4,141 @@ final class MMC2Mapper: Mapper {
     let prgRAM: ExtRAM?
     private(set) var mirroring: Mirroring
 
+    private let prgBankSize = 16 * 1024
+    private let chrBankSize4K = 4 * 1024
+
+    private let prgBankMask: Int
+    private let chrBankMask: Int
+    private let chrSize: Int
+
     private var prgBank: UInt8 = 0
-    private var chrFD0: UInt8 = 0
-    private var chrFE0: UInt8 = 0
-    private var chrFD1: UInt8 = 0
-    private var chrFE1: UInt8 = 0
-    private var latch0: UInt8 = 0xFD
-    private var latch1: UInt8 = 0xFD
+
+    // CHR registers
+    private var chr0Lo: UInt8 = 0
+    private var chr0Hi: UInt8 = 0
+    private var chr1Lo: UInt8 = 0
+    private var chr1Hi: UInt8 = 0
+
+    // Latches (0 or 1)
+    private var latch0: UInt8 = 0
+    private var latch1: UInt8 = 0
 
     init(prgROM: [UInt8], chr: CHRMemory, prgRAM: ExtRAM?, mirroring: Mirroring) {
         self.prgROM = prgROM
         self.chr = chr
         self.prgRAM = prgRAM
         self.mirroring = mirroring
-        self.prgBank = 0
-        self.chrFD0 = 0
-        self.chrFE0 = 0
-        self.chrFD1 = 0
-        self.chrFE1 = 0
-        self.latch0 = 0xFD
-        self.latch1 = 0xFD
+
+        let prgBanks = max(1, prgROM.count / prgBankSize)
+        self.prgBankMask = prgBanks - 1
+
+        self.chrSize = chr.data.count
+        let chrBanks = max(1, chrSize / chrBankSize4K)
+        self.chrBankMask = chrBanks - 1
     }
 
-    func cpuWrite(address: UInt16, value: UInt8) {
-        if (0x6000...0x7FFF).contains(address) {
-            prgRAM?.data[Int(address - 0x6000)] = value
-            return
-        }
-
-        switch address & 0xF000 {
-        case 0xA000:
-            prgBank = value & 0x0F
-        case 0xB000:
-            chrFD0 = value & 0x1F
-        case 0xC000:
-            chrFE0 = value & 0x1F
-        case 0xD000:
-            chrFD1 = value & 0x1F
-        case 0xE000:
-            chrFE1 = value & 0x1F
-        case 0xF000:
-            mirroring = (value & 0x01) == 0 ? .vertical : .horizontal
-        default:
-            break
-        }
-    }
-
+    @inline(__always)
     func cpuRead(address: UInt16) -> UInt8 {
         switch address {
         case 0x6000...0x7FFF:
-            return prgRAM?.data[Int(address - 0x6000)] ?? 0
-        case 0x8000...0x9FFF:
-            let idx = Int(prgBank) * 0x2000 + Int(address & 0x1FFF)
-            return prgROM[idx % prgROM.count]
-        case 0xA000...0xFFFF:
-            let base = prgROM.count - 0x6000
-            let idx = base + Int(address - 0xA000)
-            return prgROM[idx % prgROM.count]
+            if let ram = prgRAM { return ram.data[Int(address &- 0x6000)] }
+            return 0
+
+        case 0x8000...0xBFFF:
+            guard !prgROM.isEmpty else { return 0 }
+            let base = Int(prgBank & UInt8(prgBankMask)) * prgBankSize
+            let off  = Int(address &- 0x8000)
+            return prgROM[base &+ off]
+
+        case 0xC000...0xFFFF:
+            guard !prgROM.isEmpty else { return 0 }
+            let base = prgROM.count - 2 * prgBankSize
+            let off  = Int(address &- 0xC000)
+            return prgROM[base &+ off]
+
         default:
             return 0
         }
     }
 
+    @inline(__always)
+    func cpuWrite(address: UInt16, value: UInt8) {
+        switch address {
+        case 0xA000...0xAFFF:
+            prgBank = value & 0x0F
+
+        case 0xB000...0xBFFF:
+            chr0Lo = value & 0x1F
+
+        case 0xC000...0xCFFF:
+            chr0Hi = value & 0x1F
+
+        case 0xD000...0xDFFF:
+            chr1Lo = value & 0x1F
+
+        case 0xE000...0xEFFF:
+            chr1Hi = value & 0x1F
+
+        case 0xF000...0xFFFF:
+            mirroring = (value & 1) == 0 ? .vertical : .horizontal
+
+        case 0x6000...0x7FFF:
+            prgRAM?.data[Int(address &- 0x6000)] = value
+
+        default:
+            break
+        }
+    }
+
+    @inline(__always)
     func ppuRead(address: UInt16) -> UInt8 {
-        let addr = Int(address & 0x1FFF)
-        let isLeft = addr < 0x1000
-        let latch = isLeft ? latch0 : latch1
-        let bank: UInt8 = if isLeft {
-            latch == 0xFD ? chrFD0 : chrFE0
+        let a = address & 0x1FFF
+        if a < 0x1000 {
+            // Pattern table 0 – latch0
+            if a == 0x0FD8 { latch0 = 0 }
+            else if a == 0x0FE8 { latch0 = 1 }
+
+            let sel = (latch0 == 0) ? chr0Lo : chr0Hi
+            let bank = Int(sel) & chrBankMask
+            let base = bank * chrBankSize4K
+            let off  = Int(a)
+            if chrSize == 0 { return 0 }
+            return chr.data[(base &+ off) % chrSize]
         } else {
-            latch == 0xFD ? chrFD1 : chrFE1
-        }
-        let idx = Int(bank) * 0x1000 + (addr % 0x1000)
-        let value = chr.data[idx % chr.data.count]
+            // Pattern table 1 – latch1
+            if a == 0x1FD8 { latch1 = 0 }
+            else if a == 0x1FE8 { latch1 = 1 }
 
-        let triggerAddr = address & 0x3FFF
-        if (0x0FD8...0x0FDF).contains(triggerAddr) {
-            latch0 = 0xFD
-        } else if (0x0FE8...0x0FEF).contains(triggerAddr) {
-            latch0 = 0xFE
-        } else if (0x1FD8...0x1FDF).contains(triggerAddr) {
-            latch1 = 0xFD
-        } else if (0x1FE8...0x1FEF).contains(triggerAddr) {
-            latch1 = 0xFE
+            let sel = (latch1 == 0) ? chr1Lo : chr1Hi
+            let bank = Int(sel) & chrBankMask
+            let base = bank * chrBankSize4K
+            let off  = Int(a &- 0x1000)
+            if chrSize == 0 { return 0 }
+            return chr.data[(base &+ off) % chrSize]
         }
-
-        return value
     }
 
+    @inline(__always)
     func ppuWrite(address: UInt16, value: UInt8) {
-        if chr.isRAM {
-            chr.data[Int(address & 0x1FFF) % chr.data.count] = value
+        if !chr.isRAM || chrSize == 0 { return }
+        let a = address & 0x1FFF
+        let idx: Int
+        if a < 0x1000 {
+            let sel = (latch0 == 0) ? chr0Lo : chr0Hi
+            let bank = Int(sel) & chrBankMask
+            let base = bank * chrBankSize4K
+            idx = (base &+ Int(a)) % chrSize
+        } else {
+            let sel = (latch1 == 0) ? chr1Lo : chr1Hi
+            let bank = Int(sel) & chrBankMask
+            let base = bank * chrBankSize4K
+            idx = (base &+ Int(a &- 0x1000)) % chrSize
         }
+        chr.data[idx] = value
     }
+
+    @inline(__always) func ppuA12Observe(addr: UInt16, ppuDot: UInt64) {}
+    @inline(__always) func mapperIRQAsserted() -> Bool { false }
+    @inline(__always) func mapperIRQClear() {}
+    @inline(__always) func clockScanlineCounter() {}
 }

@@ -1,3 +1,5 @@
+import Foundation
+
 final class MMC1Mapper: Mapper {
     let prgROM: [UInt8]
     let chr: CHRMemory
@@ -21,8 +23,6 @@ final class MMC1Mapper: Mapper {
     private var prevA12: UInt8 = 0
     private var pendingChrBank0Offset: Int? = nil
     private var pendingChrBank1Offset: Int? = nil
-    private var a12EdgePending: Bool = false
-    private var lastA12EdgeDot: UInt64 = 0
 
     @inline(__always)
     private func maskCHR4K(_ v: UInt8) -> UInt8 {
@@ -46,7 +46,7 @@ final class MMC1Mapper: Mapper {
         reset()
         updateOffsets()
     }
-    
+
     func reset() {
         shiftRegister = 0x10
         applyControl(0x0C) // Mode 3: PRG fixed, vertical mirroring
@@ -57,8 +57,6 @@ final class MMC1Mapper: Mapper {
         prevA12 = 0
         pendingChrBank0Offset = nil
         pendingChrBank1Offset = nil
-        a12EdgePending = false
-        lastA12EdgeDot = 0
     }
 
     func applyControl(_ v: UInt8) {
@@ -75,8 +73,9 @@ final class MMC1Mapper: Mapper {
 
     func cpuWrite(address: UInt16, value: UInt8) {
         if (0x6000...0x7FFF).contains(address) {
-            if prgRAMEnabled {
-                if let ram = prgRAM { ram.data[Int(address - 0x6000)] = value; prgRAM = ram }
+            if prgRAMEnabled, let ram = prgRAM {
+                let idx = Int(address - 0x6000)
+                if idx < ram.size { ram.data[idx] = value }
             }
             return
         }
@@ -96,12 +95,13 @@ final class MMC1Mapper: Mapper {
             case 0: applyControl(data)
             case 1: chrBank0 = maskCHR4K(data)
             case 2: chrBank1 = maskCHR4K(data)
-            case 3: prgBank = maskPRG16K(data & 0x0F); prgRAMEnabled = (data & 0x10) == 0
+            case 3:
+                prgBank = maskPRG16K(data & 0x0F)
+                prgRAMEnabled = (data & 0x10) == 0
             default: break
             }
             shiftRegister = 0x10
             let (pOff0, pOff1) = computeCHRBankOffsets()
-            // Queue CHR changes, wait for A12 (Phase 7 fix)
             pendingChrBank0Offset = pOff0
             pendingChrBank1Offset = pOff1
             updatePROffsets()
@@ -111,7 +111,11 @@ final class MMC1Mapper: Mapper {
     func cpuRead(address: UInt16) -> UInt8 {
         switch address {
         case 0x6000...0x7FFF:
-            return prgRAMEnabled ? (prgRAM?.data[Int(address - 0x6000)] ?? 0) : 0
+            if prgRAMEnabled, let ram = prgRAM {
+                let idx = Int(address - 0x6000)
+                if idx < ram.size { return ram.data[idx] }
+            }
+            return 0
         case 0x8000...0xBFFF:
             let off = Int(address - 0x8000)
             let idx = prgBank0Offset + off
@@ -128,8 +132,8 @@ final class MMC1Mapper: Mapper {
     func ppuRead(address: UInt16) -> UInt8 {
         if chr.data.isEmpty { return 0 }
         let a = Int(address & 0x1FFF)
-        var idx: Int
         let chrMode4K = (control & 0x10) != 0
+        let idx: Int
         if chrMode4K {
             if a < 0x1000 {
                 idx = chrBank0Offset + a
@@ -139,32 +143,33 @@ final class MMC1Mapper: Mapper {
         } else {
             idx = chrBank0Offset + a
         }
-        if idx < 0 { idx = 0 }
-        if idx >= chr.data.count { idx = chr.data.count - 1 }
-        return chr.data[idx]
+        if idx >= 0 && idx < chr.data.count {
+            return chr.data[idx]
+        }
+        return 0
     }
 
     func ppuWrite(address: UInt16, value: UInt8) {
-        if chr.isRAM {
-            let a = Int(address & 0x1FFF)
-            var idx: Int
-            let chrMode4K = (control & 0x10) != 0
-            if chrMode4K {
-                if a < 0x1000 {
-                    idx = chrBank0Offset + a
-                } else {
-                    idx = chrBank1Offset + (a - 0x1000)
-                }
-            } else {
+        guard chr.isRAM else { return }
+        let a = Int(address & 0x1FFF)
+        let chrMode4K = (control & 0x10) != 0
+        let idx: Int
+        if chrMode4K {
+            if a < 0x1000 {
                 idx = chrBank0Offset + a
+            } else {
+                idx = chrBank1Offset + (a - 0x1000)
             }
-            if 0 <= idx && idx < chr.data.count {
-                chr.data[idx] = value
-            }
+        } else {
+            idx = chrBank0Offset + a
+        }
+        if idx >= 0 && idx < chr.data.count {
+            chr.data[idx] = value
         }
     }
 
-    @inline(__always) private func computeCHRBankOffsets() -> (Int, Int) {
+    @inline(__always)
+    private func computeCHRBankOffsets() -> (Int, Int) {
         let chrMode = (control & 0x10) != 0
         if chrMode {
             let off0 = Int(chrBank0) * 0x1000
@@ -177,7 +182,8 @@ final class MMC1Mapper: Mapper {
         }
     }
 
-    @inline(__always) private func updatePROffsets() {
+    @inline(__always)
+    private func updatePROffsets() {
         let prgMode = (control >> 2) & 0x03
         switch prgMode {
         case 0, 1:
@@ -201,10 +207,7 @@ final class MMC1Mapper: Mapper {
 
     func ppuA12Observe(addr: UInt16, ppuDot: UInt64) {
         let a12: UInt8 = (addr & 0x1000) != 0 ? 1 : 0
-        
-        // --- FIX: Simplify MMC1 A12 Logic, removing debounce for performance/simplicity ---
         if prevA12 == 0 && a12 == 1 {
-            // Apply pending CHR switch on rising edge
             if let po0 = pendingChrBank0Offset, let po1 = pendingChrBank1Offset {
                 chrBank0Offset = po0
                 chrBank1Offset = po1
@@ -214,9 +217,8 @@ final class MMC1Mapper: Mapper {
         }
         prevA12 = a12
     }
-    
-    // Original applyPendingBankSwitchIfSafe function removed as it is now inlined in ppuA12Observe
-    
-    func mapperIRQAsserted() -> Bool { return false }
+
+    func mapperIRQAsserted() -> Bool { false }
     func mapperIRQClear() {}
+    func clockScanlineCounter() {}
 }

@@ -18,6 +18,10 @@ struct ContentView: View {
     @State private var colorTemp: Double = 0.0
     @State private var curvature: Double = 0.08
 
+    // New: Turbo + audio latency state
+    @State private var turboEnabled: Bool = false
+    @State private var audioLatency: EmulatorCore.AudioLatency = .medium
+
     var body: some View {
         VStack(spacing: 0) {
             ZStack {
@@ -32,13 +36,8 @@ struct ContentView: View {
                     curvature: Float(crtEnabled ? curvature : 0.0)
                 )
                 .background(Color.black)
-                // ---
-                // --- THIS IS THE FIX ---
-                // ---
-                // Hide the MetalView if no cartridge is loaded.
-                // This reveals the Text view underneath.
                 .opacity(emulator.cartridge == nil ? 0.0 : 1.0)
-                
+
                 if emulator.cartridge == nil {
                     Text("Load a ROM to start playing")
                         .foregroundColor(.gray)
@@ -93,7 +92,8 @@ struct ContentView: View {
                     .controlSize(.regular)
                     .tint(.accentColor)
                     .cornerRadius(12)
-                }.padding(.horizontal, 6)
+                }
+                .padding(.horizontal, 6)
 
                 HStack(spacing: 8) {
                     Text("Shader:").font(.headline)
@@ -106,14 +106,15 @@ struct ContentView: View {
                     .controlSize(.regular)
                     .tint(.accentColor)
                     .cornerRadius(12)
-                }.padding(.horizontal, 6)
+                }
+                .padding(.horizontal, 6)
 
                 Toggle("VSync", isOn: $vsyncEnabled)
+
                 Toggle("CRT Mode", isOn: $crtEnabled)
                     .toggleStyle(.switch)
                     .tint(.accentColor)
                     .padding(.leading, 8)
-    
                     .toggleStyle(.switch)
                     .controlSize(.regular)
                     .tint(.accentColor)
@@ -130,19 +131,25 @@ struct ContentView: View {
                 .cornerRadius(12)
                 .help("Frame limit")
 
-                HStack(spacing: 8) {
-                    Text("Gamma").font(.headline)
-                    Slider(value: $gamma, in: 0.8...1.4, step: 0.02)
-                        .frame(width: 140)
-                        .help("Display gamma")
-                }.padding(.horizontal, 6)
+                // New: Turbo toggle
+                Toggle("Turbo", isOn: $turboEnabled)
+                    .toggleStyle(.switch)
+                    .tint(.orange)
+                    .help("Run emulation as fast as possible (no frame pacing)")
 
+                // New: Audio latency picker
                 HStack(spacing: 8) {
-                    Text("Warmth").font(.headline)
-                    Slider(value: $colorTemp, in: 0.0...1.0, step: 0.02)
-                        .frame(width: 120)
-                        .help("Color temperature (cool → warm)")
-                }.padding(.horizontal, 6)
+                    Text("Audio Latency").font(.headline)
+                    Picker("Audio Latency", selection: $audioLatency) {
+                        Text("Low").tag(EmulatorCore.AudioLatency.low)
+                        Text("Medium").tag(EmulatorCore.AudioLatency.medium)
+                        Text("High").tag(EmulatorCore.AudioLatency.high)
+                    }
+                    .pickerStyle(.segmented)
+                    .controlSize(.regular)
+                    .tint(.accentColor)
+                }
+                .padding(.horizontal, 6)
 
                 Spacer()
 
@@ -155,19 +162,45 @@ struct ContentView: View {
                 }
             }
         }
-        .onDisappear { emulator.stop() }
-        
-        .onChange(of: vsyncEnabled) { old, newValue in
+        .onAppear {
+            // Initialize core with current UI state
+            emulator.setVSync(vsyncEnabled)
+            emulator.setFrameLimit(frameLimit)
+            emulator.setTurboEnabled(turboEnabled)
+            emulator.setAudioLatency(audioLatency)
+        }
+        .onDisappear {
+            emulator.stop()
+        }
+        .onChange(of: vsyncEnabled) { _, newValue in
             emulator.setVSync(newValue)
         }
-        .onChange(of: frameLimit) { old, newValue in
+        .onChange(of: frameLimit) { _, newValue in
             emulator.setFrameLimit(newValue)
         }
-.onReceive(Timer.publish(every: 1.0/10.0, on: .main, in: .common).autoconnect()) { _ in
+        .onChange(of: turboEnabled) { _, newValue in
+            emulator.setTurboEnabled(newValue)
+        }
+        .onChange(of: audioLatency) { _, newValue in
+            emulator.setAudioLatency(newValue)
+        }
+        .onReceive(
+            Timer
+                .publish(every: 1.0 / 10.0, on: .main, in: .common)
+                .autoconnect()
+        ) { _ in
             let current = emulator.frameSerial
             let deltaFrames = Double(current &- lastSerial)
             fps = deltaFrames * 10.0
             lastSerial = current
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .emulatorLoadROM)) { _ in
+            loadROM()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .emulatorReset)) { _ in
+            if emulator.cartridge != nil {
+                emulator.reset()
+            }
         }
     }
 
@@ -177,11 +210,7 @@ struct ContentView: View {
 
     private func loadROM() {
         let panel = NSOpenPanel()
-        
-        // --- THIS IS THE FIX ---
         panel.allowedContentTypes = [UTType(filenameExtension: "nes") ?? .data]
-        // -----------------------
-        
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
