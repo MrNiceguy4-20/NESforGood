@@ -104,6 +104,7 @@ final class PPU {
     @inline(__always) private func currentMirroring() -> Mirroring {
         if let m = cartridge.mapper as? MMC3Mapper { return m.mirroring }
         if let m = cartridge.mapper as? MMC1Mapper { return m.mirroring }
+        if let m = cartridge.mapper as? MMC4Mapper { return m.mirroring }
         if let m = cartridge.mapper as? AxROMMapper { return m.mirroring }
         if let m = cartridge.mapper as? MMC5Mapper { return m.mirroring }
         return baseMirroring
@@ -260,10 +261,7 @@ final class PPU {
             return vram[Int(nameTableMirror(addr: a))]
         }
         var pa = a & 0x001F
-        if pa == 0x10 { pa = 0x00 }
-        else if pa == 0x14 { pa = 0x04 }
-        else if pa == 0x18 { pa = 0x08 }
-        else if pa == 0x1C { pa = 0x0C }
+        if pa & 0x0013 == 0x10 { pa &= 0x000F }
         return cachedPalette[Int(pa)] & 0x3F
     }
 
@@ -281,10 +279,7 @@ final class PPU {
             return
         }
         var pa = a & 0x001F
-        if pa == 0x10 { pa = 0x00 }
-        else if pa == 0x14 { pa = 0x04 }
-        else if pa == 0x18 { pa = 0x08 }
-        else if pa == 0x1C { pa = 0x0C }
+        if pa & 0x0013 == 0x10 { pa &= 0x000F }
         palette[Int(pa)] = value
         cachedPalette[Int(pa)] = value
     }
@@ -653,10 +648,7 @@ final class PPU {
         let finalPaletteAddress: UInt16 = (px == 0) ? 0x3F00 : 0x3F00 + (UInt16(pal) << 2) + UInt16(px)
 
         var pa = finalPaletteAddress & 0x001F
-        if pa == 0x10 { pa = 0x00 }
-        else if pa == 0x14 { pa = 0x04 }
-        else if pa == 0x18 { pa = 0x08 }
-        else if pa == 0x1C { pa = 0x0C }
+        if pa & 0x0013 == 0x10 { pa &= 0x000F }
         let colorIndex = cachedPalette[Int(pa)]
 
         let rgb = PPU.sysPal[Int(colorIndex) & 0x3F]
@@ -738,6 +730,14 @@ final class PPU {
         os_unfair_lock_unlock(&fbLock)
     }
 
+    private func cachePalette() {
+        for i in 0..<0x20 {
+            var pa = UInt16(i)
+            if pa & 0x0013 == 0x10 { pa &= 0x000F }
+            cachedPalette[Int(pa)] = palette[Int(pa)] & 0x3F
+        }
+    }
+    
     func reset() {
         cycle = 0; scanline = -1; frame = 0; frameReady = false; nmiPending = false
         status = 0; ctrl = 0; mask = 0; oamAddr = 0; w = false; v = 0; t = 0; x = 0
@@ -749,16 +749,5 @@ final class PPU {
         mmc3Mapper = cartridge.mapper as? MMC3Mapper
         mmc5Mapper = cartridge.mapper as? MMC5Mapper
         currentTick = self.tickPreRenderScanline
-    }
-
-    private func cachePalette() {
-        for i in 0..<0x20 {
-            var pa = UInt16(i)
-            if pa == 0x10 { pa = 0x00 }
-            else if pa == 0x14 { pa = 0x04 }
-            else if pa == 0x18 { pa = 0x08 }
-            else if pa == 0x1C { pa = 0x0C }
-            cachedPalette[Int(pa)] = palette[Int(pa)] & 0x3F
-        }
     }
 }

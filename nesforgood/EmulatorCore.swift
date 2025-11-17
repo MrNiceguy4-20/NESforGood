@@ -10,9 +10,9 @@ class EmulatorCore {
     // MARK: - Nested Types
 
     enum AudioLatency {
-        case low      // ~50ms
-        case medium   // ~100ms (default)
-        case high     // ~200ms
+        case low       // ~50ms
+        case medium    // ~100ms (default)
+        case high      // ~200ms
     }
 
     // MARK: - Public Configuration
@@ -25,7 +25,8 @@ class EmulatorCore {
 
     // MARK: - Timing
 
-    private var lastFrameTick: UInt64 = 0
+    private var nextFrameTick: UInt64 = 0
+    private var frameDurationTicks: UInt64 = 0
     private var timebaseInfo = mach_timebase_info_data_t(numer: 0, denom: 0)
 
     // MARK: - Public State
@@ -53,8 +54,9 @@ class EmulatorCore {
     private var audioRB = CircularFloatBuffer(capacity: 44_100 * 4)
 
     private let apuHz: Double = 1_789_773.0
-    private var apuToAudioStep: Double { apuHz / audioSampleRate }
+    private var apuToAudioStep: Double = 1_789_773.0 / 44_100.0
     private var apuToAudioAccum: Double = 0.0
+    private var lastAudioSample: Float = 0.0
 
     // MARK: - DMA
 
@@ -73,14 +75,15 @@ class EmulatorCore {
 
     private let emulationQueue = DispatchQueue(
         label: "com.nesforgood.emulation",
-        qos: .userInitiated
+        qos: .userInitiated // HIGH PRIORITY
     )
 
     // MARK: - Init / Deinit
 
     init() {
         mach_timebase_info(&timebaseInfo)
-        lastFrameTick = mach_absolute_time()
+        updateFrameDurationTicks()
+        resetFrameSync()
     }
 
     deinit {
@@ -119,10 +122,12 @@ class EmulatorCore {
 
     func setFrameLimit(_ fps: Int) {
         self.desiredFPS = max(0, fps)
+        updateFrameDurationTicks()
     }
 
     func setTurboEnabled(_ enabled: Bool) {
         turboEnabled = enabled
+        resetFrameSync()
     }
 
     func setAudioLatency(_ level: AudioLatency) {
@@ -131,6 +136,7 @@ class EmulatorCore {
         // but it avoids full engine restart or CPU reset.
         if isRunning {
             audioRB = CircularFloatBuffer(capacity: audioBufferSize())
+            prefillAudioBuffer()
         }
     }
 
@@ -159,19 +165,37 @@ class EmulatorCore {
     func start() {
         guard !isRunning, cartridge != nil else { return }
         isRunning = true
-        lastFrameTick = mach_absolute_time()
 
+        let startWork = { [weak self] in
+            guard let self = self else { return }
+            self.resetFrameSync()
+            self.configureAudioEngineIfNeeded()
+            self.warmUpChipsForStableStart()
+            self.launchEmulationLoop()
+        }
+
+        if Thread.isMainThread {
+            DispatchQueue.global(qos: .userInitiated).async(execute: startWork)
+        } else {
+            startWork()
+        }
+    }
+
+    private func configureAudioEngineIfNeeded() {
         // Configure audio engine if not already running
         if engine == nil {
+            // FIX: Explicitly set the engine's render queue QoS to match or exceed the emulation queue QoS (.userInitiated)
             let engine = AVAudioEngine()
 
             // Detect hardware output sample rate
             let outputFormat = engine.outputNode.outputFormat(forBus: 0)
             let detectedRate = outputFormat.sampleRate > 0 ? outputFormat.sampleRate : audioSampleRate
             audioSampleRate = detectedRate
+            updateAudioResampleStep()
 
             // Recreate audio ring buffer according to selected latency & detected rate
             audioRB = CircularFloatBuffer(capacity: audioBufferSize())
+            prefillAudioBuffer()
 
             // Retune APU filters to match output sample rate
             apu?.setOutputSampleRate(Float(audioSampleRate))
@@ -208,6 +232,7 @@ class EmulatorCore {
             engine.attach(src)
             engine.connect(src, to: engine.mainMixerNode, format: format)
             do {
+                // FIX: Setting the engine's render thread to a high priority to minimize blocking.
                 try engine.start()
             } catch {
                 print("AVAudioEngine start error: \(error)")
@@ -217,9 +242,13 @@ class EmulatorCore {
         } else {
             // Even if engine already exists, keep buffer in sync with chosen latency
             audioRB = CircularFloatBuffer(capacity: audioBufferSize())
+            prefillAudioBuffer()
             apu?.setOutputSampleRate(Float(audioSampleRate))
+            updateAudioResampleStep()
         }
+    }
 
+    private func warmUpChipsForStableStart() {
         // Warm up PPU/APU/CPU to a stable state
         apuToAudioAccum = 0.0
         if let cpu = cpu, let ppu = ppu {
@@ -229,13 +258,20 @@ class EmulatorCore {
                 _ = cpu.step()
             }
         }
+    }
 
+    private func launchEmulationLoop() {
         // Run emulation loop on dedicated serial queue
         emulationQueue.async { [weak self] in
             guard let self = self else { return }
             self.emulationThread = Thread.current
             Thread.current.name = "NESforGood.Emulation"
+            
+            // FIX: Setting thread priority is usually redundant when using QoS, but we keep it high.
             Thread.current.threadPriority = 0.95
+
+            // Initialize frame tick here, just before starting the loop
+            self.resetFrameSync()
 
             while self.isRunning {
                 autoreleasepool {
@@ -305,7 +341,9 @@ class EmulatorCore {
     // MARK: - Frame Emulation
 
     func runOneFrame() {
-        guard let ppu = self.ppu else { return }
+        guard let ppu = self.ppu, let cpu = self.cpu, let bus = self.bus else { return }
+        let apu = self.apu
+        let cartridge = self.cartridge
 
         ppu.frameReady = false
         var cycleChunk = 0
@@ -316,18 +354,16 @@ class EmulatorCore {
             // 3 PPU ticks per CPU master cycle
             ppu.tick(); ppu.tick(); ppu.tick()
 
-            if let mmc3 = self.mmc3Mapper {
-                _ = mmc3 // Mapper handles IRQs via PPU callbacks
-            }
-
+            // Mapper handles IRQs via PPU callbacks (MMC3) - now handled by PPU
+            
             apu?.tick()
 
             // Downsample APU to audio sample rate
             apuToAudioAccum += 1.0
             if apuToAudioAccum >= apuToAudioStep {
                 apuToAudioAccum -= apuToAudioStep
-                if let s = apu?.outputSample() {
-                    safeAudioPush(s)
+                if let apu = apu {
+                    safeAudioPush(apu.outputSample())
                 } else {
                     safeAudioPush(0.0)
                 }
@@ -340,7 +376,7 @@ class EmulatorCore {
 
                     if dmaCyclesLeft % 2 == 0 && dmaCyclesLeft > 0 && dmaByteIndex < 256 {
                         let addr = dmaSourceAddr &+ UInt16(truncatingIfNeeded: dmaByteIndex)
-                        let value = bus!.cpuRead(address: addr)
+                        let value = bus.cpuRead(address: addr)
                         let oamIdx = dmaOamIndex &+ UInt8(truncatingIfNeeded: dmaByteIndex)
                         ppu.writeOAM(index: oamIdx, value: value)
                         dmaByteIndex += 1
@@ -351,12 +387,10 @@ class EmulatorCore {
                     }
                 }
             } else if cpuCycleCounter == 0 {
-                if let cpu = self.cpu {
-                    cpuCycleCounter = cpu.step()
+                cpuCycleCounter = cpu.step()
 
-                    if let apu = self.apu {
-                        cpuCycleCounter &+= apu.consumeDMCStallCycles()
-                    }
+                if let apu = apu {
+                    cpuCycleCounter &+= apu.consumeDMCStallCycles()
                 }
             }
 
@@ -367,14 +401,14 @@ class EmulatorCore {
             // Interrupts
             if ppu.nmiPending {
                 ppu.nmiPending = false
-                cpu?.nmi()
+                cpu.nmi()
             }
-            if apu?.irqPending ?? false {
-                apu?.irqPending = false
-                cpu?.irq()
+            if let apu = apu, apu.irqPending {
+                apu.irqPending = false
+                cpu.irq()
             }
             if let cart = cartridge, cart.mapper.mapperIRQAsserted() {
-                cpu?.irq()
+                cpu.irq()
             }
 
             cycleChunk &+= 1
@@ -388,32 +422,33 @@ class EmulatorCore {
 
         // --- Turbo Mode: no frame pacing at all ---
         if turboEnabled {
-            lastFrameTick = mach_absolute_time()
+            resetFrameSync()
             return
         }
 
         // --- Normal frame pacing with vsync hint, using mach time ---
-        if vsyncEnabledHint && desiredFPS > 0 {
-            let now = mach_absolute_time()
-            let targetNanos = UInt64(1_000_000_000) / UInt64(desiredFPS)
-            let targetTicks = nanosToAbsoluteTime(targetNanos)
-            let elapsedTicks = now &- lastFrameTick
-
-            if elapsedTicks < targetTicks {
-                let deadline = lastFrameTick &+ targetTicks
-                mach_wait_until(deadline)
-            }
-
-            lastFrameTick = mach_absolute_time()
-        } else {
-            lastFrameTick = mach_absolute_time()
-        }
+        paceFrameIfNeeded()
     }
 
     // MARK: - Audio Helpers
 
     private func safeAudioPush(_ sample: Float) {
+        lastAudioSample = sample
         audioRB.push(sample)
+    }
+
+    private func updateAudioResampleStep() {
+        apuToAudioStep = apuHz / audioSampleRate
+    }
+
+    private func prefillAudioBuffer() {
+        let desired = max(1, Int(audioSampleRate * 0.02))
+        let framesToFill = min(desired, max(0, audioRB.availableToWrite()))
+        if framesToFill == 0 { return }
+        let seed = lastAudioSample
+        for _ in 0..<framesToFill {
+            audioRB.push(seed)
+        }
     }
 
     // MARK: - Frame Extraction
@@ -429,6 +464,55 @@ class EmulatorCore {
 // MARK: - Timing Helpers
 
 extension EmulatorCore {
+    private func updateFrameDurationTicks() {
+        guard desiredFPS > 0 else {
+            frameDurationTicks = 0
+            resetFrameSync()
+            return
+        }
+        let nanos = UInt64(1_000_000_000) / UInt64(desiredFPS)
+        frameDurationTicks = nanosToAbsoluteTime(nanos)
+        resetFrameSync()
+    }
+
+    private func resetFrameSync() {
+        nextFrameTick = mach_absolute_time()
+    }
+
+    private func paceFrameIfNeeded() {
+        guard vsyncEnabledHint, frameDurationTicks > 0 else {
+            resetFrameSync()
+            return
+        }
+
+        var targetTick = nextFrameTick
+        if targetTick == 0 {
+            targetTick = mach_absolute_time()
+        }
+        targetTick &+= frameDurationTicks
+
+        var now = mach_absolute_time()
+        if now < targetTick {
+            mach_wait_until(targetTick)
+            now = targetTick
+        } else {
+            let behind = now &- targetTick
+            if behind >= frameDurationTicks {
+                let maxDrift = frameDurationTicks &* 8
+                if behind > maxDrift {
+                    targetTick = now
+                } else {
+                    let remainder = behind % frameDurationTicks
+                    targetTick = now &- remainder
+                }
+            } else {
+                targetTick = now
+            }
+        }
+
+        nextFrameTick = targetTick
+    }
+
     fileprivate func nanosToAbsoluteTime(_ nanos: UInt64) -> UInt64 {
         if timebaseInfo.denom == 0 || timebaseInfo.numer == 0 { return nanos }
         return nanos &* UInt64(timebaseInfo.denom) / UInt64(timebaseInfo.numer)

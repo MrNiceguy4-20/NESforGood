@@ -22,9 +22,6 @@ final class Bus {
     private var mmc3IRQEnabled: Bool = false
     private var mmc3IRQPending: Bool = false
     
-    // ---
-    // --- OPTIMIZATION: Replaced [UInt8] with UnsafeMutablePointer ---
-    // ---
     private var ram: UnsafeMutablePointer<UInt8>
     
     var cartridge: Cartridge
@@ -33,9 +30,6 @@ final class Bus {
     let controller: Controller
     weak var core: EmulatorCore?
     
-    // ---
-    // --- OPTIMIZATION: Pre-cast mappers ---
-    // ---
     private let mapper: Mapper
     private let nromMapper: NROMMapper?
     private let mmc1Mapper: MMC1Mapper?
@@ -50,9 +44,6 @@ final class Bus {
     private let gnromMapper: GNROMMapper?
     private let mapper71: Mapper71?
 
-    // ---
-    // --- OPTIMIZATION: Consolidated Mapper Functions ---
-    // ---
     private var prgReadTable: [((UInt16) -> UInt8)] = []
     private var prgWriteTable: [((UInt16, UInt8) -> Void)] = []
 
@@ -87,11 +78,9 @@ final class Bus {
         self.gnromMapper = mapper as? GNROMMapper
         self.mapper71 = mapper as? Mapper71
 
-        // --- OPTIMIZATION: Build mapper tables after init ---
         let readClosure: ((UInt16) -> UInt8) = { addr in cartridge.mapper.cpuRead(address: addr) }
         let writeClosure: ((UInt16, UInt8) -> Void) = { addr, val in cartridge.mapper.cpuWrite(address: addr, value: val) }
         
-        // Initialize the table for the full PRG space (0x6000-0xFFFF)
         self.prgReadTable = Array(repeating: readClosure, count: 0x10000)
         self.prgWriteTable = Array(repeating: writeClosure, count: 0x10000)
     }
@@ -138,7 +127,6 @@ final class Bus {
         } else if address == 0x4016 {
             return controller.read()
         } else if address >= 0x6000 {
-            // --- OPTIMIZATION: Use the consolidated table for PRG/RAM area ---
             return prgReadTable[Int(address)] (address)
         } else {
             return 0
@@ -174,7 +162,6 @@ final class Bus {
         } else if address == 0x4016 {
             controller.write(value: value)
         } else if address >= 0x6000 {
-            // --- OPTIMIZATION: Use the consolidated table for PRG/RAM area ---
             prgWriteTable[Int(address)] (address, value)
         }
     }

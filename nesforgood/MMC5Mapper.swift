@@ -77,6 +77,7 @@ final class MMC5Mapper: Mapper {
         eightBySixteen = false
     }
 
+    @inline(__always)
     func cpuRead(address: UInt16) -> UInt8 {
         switch address {
         case 0x5C00...0x5FFF:
@@ -104,6 +105,7 @@ final class MMC5Mapper: Mapper {
         }
     }
 
+    @inline(__always)
     func cpuWrite(address: UInt16, value: UInt8) {
         switch address {
         case 0x5100:
@@ -162,6 +164,7 @@ final class MMC5Mapper: Mapper {
         prgRamProtect1 == 0x02 && prgRamProtect2 == 0x01
     }
 
+    @inline(__always)
     private func prgRomRead(address: UInt16) -> UInt8 {
         let a = Int(address) - 0x8000
         let lastBank = (prgROM.count / prgBankSize8K) - 1
@@ -204,10 +207,12 @@ final class MMC5Mapper: Mapper {
         }
     }
 
+    @inline(__always)
     private func prgRamRead(bank: Int, off: Int) -> UInt8 {
         prgRAM?.data[(bank * prgBankSize8K + off) % (prgRAM?.size ?? 1)] ?? 0
     }
 
+    @inline(__always)
     func ppuRead(address: UInt16) -> UInt8 {
         let a = Int(address & 0x1FFF)
         let bank = getChrBank(for: address)
@@ -220,6 +225,7 @@ final class MMC5Mapper: Mapper {
         return chr.data[idx]
     }
 
+    @inline(__always)
     func ppuWrite(address: UInt16, value: UInt8) {
         if chr.isRAM {
             let a = Int(address & 0x1FFF)
@@ -228,6 +234,7 @@ final class MMC5Mapper: Mapper {
         }
     }
 
+    @inline(__always)
     private func getChrBank(for address: UInt16) -> Int {
         let slot = Int(address) / chrSlotSize
         guard slot >= 0 && slot < chrRegsForSlot.count else { return 0 }
@@ -266,11 +273,12 @@ final class MMC5Mapper: Mapper {
         }
     }
     
+    @inline(__always)
     func clockScanlineCounter() {
         // This method satisfies the Mapper protocol but the actual
         // MMC5 counting is handled in PPU.swift at cycle 256 for accuracy.
     }
 
-    func mapperIRQAsserted() -> Bool { return irqPending && irqEnabled }
-    func mapperIRQClear() { irqPending = false }
+    @inline(__always) func mapperIRQAsserted() -> Bool { return irqPending && irqEnabled }
+    @inline(__always) func mapperIRQClear() { irqPending = false }
 }

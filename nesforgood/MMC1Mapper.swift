@@ -71,6 +71,7 @@ final class MMC1Mapper: Mapper {
         updateOffsets()
     }
 
+    @inline(__always)
     func cpuWrite(address: UInt16, value: UInt8) {
         if (0x6000...0x7FFF).contains(address) {
             if prgRAMEnabled, let ram = prgRAM {
@@ -108,6 +109,7 @@ final class MMC1Mapper: Mapper {
         }
     }
 
+    @inline(__always)
     func cpuRead(address: UInt16) -> UInt8 {
         switch address {
         case 0x6000...0x7FFF:
@@ -129,6 +131,7 @@ final class MMC1Mapper: Mapper {
         }
     }
 
+    @inline(__always)
     func ppuRead(address: UInt16) -> UInt8 {
         if chr.data.isEmpty { return 0 }
         let a = Int(address & 0x1FFF)
@@ -149,6 +152,7 @@ final class MMC1Mapper: Mapper {
         return 0
     }
 
+    @inline(__always)
     func ppuWrite(address: UInt16, value: UInt8) {
         guard chr.isRAM else { return }
         let a = Int(address & 0x1FFF)
@@ -205,6 +209,7 @@ final class MMC1Mapper: Mapper {
         updatePROffsets()
     }
 
+    @inline(__always)
     func ppuA12Observe(addr: UInt16, ppuDot: UInt64) {
         let a12: UInt8 = (addr & 0x1000) != 0 ? 1 : 0
         if prevA12 == 0 && a12 == 1 {
@@ -218,7 +223,7 @@ final class MMC1Mapper: Mapper {
         prevA12 = a12
     }
 
-    func mapperIRQAsserted() -> Bool { false }
-    func mapperIRQClear() {}
-    func clockScanlineCounter() {}
+    @inline(__always) func mapperIRQAsserted() -> Bool { false }
+    @inline(__always) func mapperIRQClear() {}
+    @inline(__always) func clockScanlineCounter() {}
 }

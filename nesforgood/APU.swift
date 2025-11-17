@@ -4,14 +4,12 @@ final class APU {
     public var dmcStallCycles: Int = 0
     weak var bus: Bus?
 
-    // MARK: - Channels
     var pulse1 = PulseChannel(channel: 1)
     var pulse2 = PulseChannel(channel: 2)
     var triangle = TriangleChannel()
     var noise = NoiseChannel()
     var dmc = DMCChannel()
 
-    // MARK: - Timing
     private var cpuCycle: UInt64 = 0
     private var halfRateToggle: Bool = false
     private var frameCycle: UInt32 = 0
@@ -24,21 +22,16 @@ final class APU {
     private var pending4017write: Int = -1
     private var pending4017value: UInt8 = 0
 
-    // MARK: - Mixing tables
     private var pulseTable = [Float](repeating: 0, count: 31)
     private var tndTable = [Float](repeating: 0, count: 203)
 
-    // MARK: - Filters
     private var lpY: Float = 0.0
     private var lpAlpha: Float = 0.0
     private var hpY: Float = 0.0
     private var hpX: Float = 0.0
     private var hpAlpha: Float = 0.0
 
-    // MARK: - Dynamic sample rate support
     private var outputSampleRate: Float = 44_100.0
-
-    // MARK: - Initializers
 
     convenience init(sampleRate: Float) {
         self.init()
@@ -49,13 +42,11 @@ final class APU {
     init() {
         outputSampleRate = 44_100.0
 
-        // NES pulse output lookup table
         pulseTable[0] = 0.0
         for i in 1..<31 {
             pulseTable[i] = 95.52 / (8128.0 / Float(i) + 100.0)
         }
 
-        // NES triangle/noise/DMC (TND) mixer lookup table
         tndTable[0] = 0.0
         for i in 1..<203 {
             tndTable[i] = 163.67 / (24329.0 / Float(i) + 100.0)
@@ -70,16 +61,12 @@ final class APU {
         configureFilters()
     }
 
-    // MARK: - Filters
-
     private func configureFilters() {
         let fs = max(8_000.0, outputSampleRate)
 
-        // Low-pass (~12 kHz)
         let fcLP: Float = 12_000.0
         lpAlpha = 1.0 - exp(-2.0 * .pi * fcLP / fs)
 
-        // High-pass (~90 Hz)
         let fcHP: Float = 90.0
         let dt = 1.0 / fs
         let rc = 1.0 / (2.0 * .pi * fcHP)
@@ -92,8 +79,6 @@ final class APU {
         outputSampleRate = clamped
         configureFilters()
     }
-
-    // MARK: - Reset
 
     func reset() {
         pulse1.reset()
@@ -117,8 +102,6 @@ final class APU {
         hpX = 0.0
     }
 
-    // MARK: - CPU Register Reads
-
     @inline(__always)
     func readStatus() -> UInt8 {
         var val: UInt8 = 0
@@ -137,8 +120,6 @@ final class APU {
         frameIRQFlag = false
         return val
     }
-
-    // MARK: - CPU Register Writes
 
     @inline(__always)
     func cpuWrite(address: UInt16, value: UInt8) {
@@ -197,8 +178,6 @@ final class APU {
         }
     }
 
-    // MARK: - Frame Counter Writes
-
     @inline(__always)
     private func apply4017Write(_ value: UInt8) {
         frameMode5Step  = (value & 0x80) != 0
@@ -216,13 +195,10 @@ final class APU {
         irqPending = ((!frameIRQInhibit && frameIRQFlag) || dmc.irqFlag)
     }
 
-    // MARK: - Tick
-
     @inline(__always)
     func tick() {
         cpuCycle &+= 1
 
-        // Handle delayed write to $4017
         if pending4017write > 0 {
             pending4017write &-= 1
             if pending4017write == 0 {
@@ -230,10 +206,8 @@ final class APU {
             }
         }
 
-        // Triangle clocks every CPU cycle
         triangle.clockTimer()
 
-        // Others clock at half CPU rate
         halfRateToggle.toggle()
         if halfRateToggle {
             pulse1.clockTimer()
@@ -279,8 +253,6 @@ final class APU {
         irqPending = ((!frameIRQInhibit && frameIRQFlag) || dmc.irqFlag)
     }
 
-    // MARK: - Envelope & Sweep
-
     @inline(__always)
     private func clockQuarterFrame() {
         pulse1.clockEnvelope()
@@ -298,8 +270,6 @@ final class APU {
         triangle.clockLength()
         noise.clockLength()
     }
-
-    // MARK: - Output Mixer
 
     @inline(__always)
     func outputSample() -> Float {
@@ -319,11 +289,9 @@ final class APU {
 
         let mixed = pulseTable[pulseSum] + tndTable[tndSum]
 
-        // Low-pass
         let lpOut = lpY + lpAlpha * (mixed - lpY)
         lpY = lpOut
 
-        // High-pass
         let hpOut = hpAlpha * (hpY + lpOut - hpX)
         hpX = lpOut
         hpY = hpOut
@@ -333,8 +301,6 @@ final class APU {
         if out < -1.0 { out = -1.0 }
         return out
     }
-
-    // MARK: - DMC Stall Cycles
 
     @inline(__always)
     func consumeDMCStallCycles() -> Int {

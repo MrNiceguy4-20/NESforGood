@@ -44,6 +44,9 @@ struct ContentView: View {
                         .padding()
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black)
+            .ignoresSafeArea()
 
             Divider()
 
@@ -58,6 +61,7 @@ struct ContentView: View {
             .padding(.horizontal)
             .padding(.vertical, 6)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .toolbar {
             ToolbarItemGroup {
                 Button(action: loadROM) {
