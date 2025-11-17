@@ -35,6 +35,7 @@ final class MMC3Mapper: Mapper {
     // ----------------------------------------------------------------
     // CPU
     // ----------------------------------------------------------------
+    @inline(__always)
     func cpuRead(address: UInt16) -> UInt8 {
         switch address {
         case 0x6000...0x7FFF:
@@ -60,6 +61,7 @@ final class MMC3Mapper: Mapper {
         }
     }
     
+    @inline(__always)
     func cpuWrite(address: UInt16, value: UInt8) {
         switch address {
         case 0x6000...0x7FFF:
@@ -88,6 +90,7 @@ final class MMC3Mapper: Mapper {
     // ----------------------------------------------------------------
     // PPU
     // ----------------------------------------------------------------
+    @inline(__always)
     func ppuRead(address: UInt16) -> UInt8 {
         guard !chr.data.isEmpty else { return 0 }
         let a = Int(address & 0x1FFF)
@@ -118,6 +121,7 @@ final class MMC3Mapper: Mapper {
         return chr.data[idx % chr.data.count]
     }
     
+    @inline(__always)
     func ppuWrite(address: UInt16, value: UInt8) {
         if chr.isRAM {
             let idx = Int(address) % chr.data.count
@@ -135,6 +139,7 @@ final class MMC3Mapper: Mapper {
      * This function is now called *ONCE* per scanline by the PPU
      * at the precise moment the counter should be clocked.
      */
+    @inline(__always)
     func clockScanlineCounter() {
         if irqReload || irqCounter == 0 {
             // A reload was requested OR counter was 0.
@@ -154,18 +159,18 @@ final class MMC3Mapper: Mapper {
     }
     
     // A12 observation is no longer needed
+    @inline(__always)
     func ppuA12Observe(addr: UInt16, ppuDot: UInt64) {}
-    
-    // tickPPUCycles is no longer needed
-    func tickPPUCycles(_ cycles: UInt64) {}
     
     // ----------------------------------------------------------------
     // IRQ protocol
     // ----------------------------------------------------------------
+    @inline(__always)
     func mapperIRQAsserted() -> Bool {
         return irqAsserted
     }
     
+    @inline(__always)
     func mapperIRQClear() {
         irqAsserted = false
     }

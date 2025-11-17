@@ -151,6 +151,7 @@ final class CPU {
         PC &+= 2
 
         let loAddr = ptr
+        // NOTE: Emulating the 6502 indirect jump bug
         let hiAddr = (ptr & 0xFF00) | UInt16(UInt8((ptr & 0x00FF) &+ 1))
 
         let lo = UInt16(read(address: loAddr))

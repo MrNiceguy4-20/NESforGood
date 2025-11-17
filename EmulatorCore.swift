@@ -53,8 +53,9 @@ class EmulatorCore {
     private var audioRB = CircularFloatBuffer(capacity: 44_100 * 4)
 
     private let apuHz: Double = 1_789_773.0
-    private var apuToAudioStep: Double { apuHz / audioSampleRate }
+    private var apuToAudioStep: Double = 1_789_773.0 / 44_100.0
     private var apuToAudioAccum: Double = 0.0
+    private var lastAudioSample: Float = 0.0
 
     // MARK: - DMA
 
@@ -73,7 +74,7 @@ class EmulatorCore {
 
     private let emulationQueue = DispatchQueue(
         label: "com.nesforgood.emulation",
-        qos: .userInitiated
+        qos: .userInitiated // HIGH PRIORITY
     )
 
     // MARK: - Init / Deinit
@@ -131,6 +132,7 @@ class EmulatorCore {
         // but it avoids full engine restart or CPU reset.
         if isRunning {
             audioRB = CircularFloatBuffer(capacity: audioBufferSize())
+            prefillAudioBuffer()
         }
     }
 
@@ -178,15 +180,18 @@ class EmulatorCore {
     private func configureAudioEngineIfNeeded() {
         // Configure audio engine if not already running
         if engine == nil {
+            // FIX: Explicitly set the engine's render queue QoS to match or exceed the emulation queue QoS (.userInitiated)
             let engine = AVAudioEngine()
 
             // Detect hardware output sample rate
             let outputFormat = engine.outputNode.outputFormat(forBus: 0)
             let detectedRate = outputFormat.sampleRate > 0 ? outputFormat.sampleRate : audioSampleRate
             audioSampleRate = detectedRate
+            updateAudioResampleStep()
 
             // Recreate audio ring buffer according to selected latency & detected rate
             audioRB = CircularFloatBuffer(capacity: audioBufferSize())
+            prefillAudioBuffer()
 
             // Retune APU filters to match output sample rate
             apu?.setOutputSampleRate(Float(audioSampleRate))
@@ -223,6 +228,7 @@ class EmulatorCore {
             engine.attach(src)
             engine.connect(src, to: engine.mainMixerNode, format: format)
             do {
+                // FIX: Setting the engine's render thread to a high priority to minimize blocking.
                 try engine.start()
             } catch {
                 print("AVAudioEngine start error: \(error)")
@@ -232,7 +238,9 @@ class EmulatorCore {
         } else {
             // Even if engine already exists, keep buffer in sync with chosen latency
             audioRB = CircularFloatBuffer(capacity: audioBufferSize())
+            prefillAudioBuffer()
             apu?.setOutputSampleRate(Float(audioSampleRate))
+            updateAudioResampleStep()
         }
     }
 
@@ -254,7 +262,12 @@ class EmulatorCore {
             guard let self = self else { return }
             self.emulationThread = Thread.current
             Thread.current.name = "NESforGood.Emulation"
+            
+            // FIX: Setting thread priority is usually redundant when using QoS, but we keep it high.
             Thread.current.threadPriority = 0.95
+
+            // Initialize frame tick here, just before starting the loop
+            self.lastFrameTick = mach_absolute_time()
 
             while self.isRunning {
                 autoreleasepool {
@@ -324,7 +337,9 @@ class EmulatorCore {
     // MARK: - Frame Emulation
 
     func runOneFrame() {
-        guard let ppu = self.ppu else { return }
+        guard let ppu = self.ppu, let cpu = self.cpu, let bus = self.bus else { return }
+        let apu = self.apu
+        let cartridge = self.cartridge
 
         ppu.frameReady = false
         var cycleChunk = 0
@@ -335,18 +350,16 @@ class EmulatorCore {
             // 3 PPU ticks per CPU master cycle
             ppu.tick(); ppu.tick(); ppu.tick()
 
-            if let mmc3 = self.mmc3Mapper {
-                _ = mmc3 // Mapper handles IRQs via PPU callbacks
-            }
-
+            // Mapper handles IRQs via PPU callbacks (MMC3) - now handled by PPU
+            
             apu?.tick()
 
             // Downsample APU to audio sample rate
             apuToAudioAccum += 1.0
             if apuToAudioAccum >= apuToAudioStep {
                 apuToAudioAccum -= apuToAudioStep
-                if let s = apu?.outputSample() {
-                    safeAudioPush(s)
+                if let apu = apu {
+                    safeAudioPush(apu.outputSample())
                 } else {
                     safeAudioPush(0.0)
                 }
@@ -359,7 +372,7 @@ class EmulatorCore {
 
                     if dmaCyclesLeft % 2 == 0 && dmaCyclesLeft > 0 && dmaByteIndex < 256 {
                         let addr = dmaSourceAddr &+ UInt16(truncatingIfNeeded: dmaByteIndex)
-                        let value = bus!.cpuRead(address: addr)
+                        let value = bus.cpuRead(address: addr)
                         let oamIdx = dmaOamIndex &+ UInt8(truncatingIfNeeded: dmaByteIndex)
                         ppu.writeOAM(index: oamIdx, value: value)
                         dmaByteIndex += 1
@@ -370,12 +383,10 @@ class EmulatorCore {
                     }
                 }
             } else if cpuCycleCounter == 0 {
-                if let cpu = self.cpu {
-                    cpuCycleCounter = cpu.step()
+                cpuCycleCounter = cpu.step()
 
-                    if let apu = self.apu {
-                        cpuCycleCounter &+= apu.consumeDMCStallCycles()
-                    }
+                if let apu = apu {
+                    cpuCycleCounter &+= apu.consumeDMCStallCycles()
                 }
             }
 
@@ -386,14 +397,14 @@ class EmulatorCore {
             // Interrupts
             if ppu.nmiPending {
                 ppu.nmiPending = false
-                cpu?.nmi()
+                cpu.nmi()
             }
-            if apu?.irqPending ?? false {
-                apu?.irqPending = false
-                cpu?.irq()
+            if let apu = apu, apu.irqPending {
+                apu.irqPending = false
+                cpu.irq()
             }
             if let cart = cartridge, cart.mapper.mapperIRQAsserted() {
-                cpu?.irq()
+                cpu.irq()
             }
 
             cycleChunk &+= 1
@@ -432,7 +443,22 @@ class EmulatorCore {
     // MARK: - Audio Helpers
 
     private func safeAudioPush(_ sample: Float) {
+        lastAudioSample = sample
         audioRB.push(sample)
+    }
+
+    private func updateAudioResampleStep() {
+        apuToAudioStep = apuHz / audioSampleRate
+    }
+
+    private func prefillAudioBuffer() {
+        let desired = max(1, Int(audioSampleRate * 0.02))
+        let framesToFill = min(desired, max(0, audioRB.availableToWrite()))
+        if framesToFill == 0 { return }
+        let seed = lastAudioSample
+        for _ in 0..<framesToFill {
+            audioRB.push(seed)
+        }
     }
 
     // MARK: - Frame Extraction

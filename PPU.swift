@@ -228,7 +228,7 @@ final class PPU {
         } else {
             let fy = UInt16(value & 0x07) << 12
             let cy = UInt16((value >> 3) & 0x1F) << 5
-            t = (t & ~yScrollMask) | fy | cy
+            t = (t & ~(fineYMask | coarseYMask)) | fy | cy
         }
         w.toggle()
     }
@@ -738,6 +738,17 @@ final class PPU {
         os_unfair_lock_unlock(&fbLock)
     }
 
+    private func cachePalette() {
+        for i in 0..<0x20 {
+            var pa = UInt16(i)
+            if pa == 0x10 { pa = 0x00 }
+            else if pa == 0x14 { pa = 0x04 }
+            else if pa == 0x18 { pa = 0x08 }
+            else if pa == 0x1C { pa = 0x0C }
+            cachedPalette[Int(pa)] = palette[Int(pa)] & 0x3F
+        }
+    }
+    
     func reset() {
         cycle = 0; scanline = -1; frame = 0; frameReady = false; nmiPending = false
         status = 0; ctrl = 0; mask = 0; oamAddr = 0; w = false; v = 0; t = 0; x = 0
@@ -749,16 +760,5 @@ final class PPU {
         mmc3Mapper = cartridge.mapper as? MMC3Mapper
         mmc5Mapper = cartridge.mapper as? MMC5Mapper
         currentTick = self.tickPreRenderScanline
-    }
-
-    private func cachePalette() {
-        for i in 0..<0x20 {
-            var pa = UInt16(i)
-            if pa == 0x10 { pa = 0x00 }
-            else if pa == 0x14 { pa = 0x04 }
-            else if pa == 0x18 { pa = 0x08 }
-            else if pa == 0x1C { pa = 0x0C }
-            cachedPalette[Int(pa)] = palette[Int(pa)] & 0x3F
-        }
     }
 }
