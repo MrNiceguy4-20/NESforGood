@@ -49,17 +49,26 @@ final class CircularFloatBuffer {
         let currentRead = readIndex.load(ordering: .relaxed)
         let currentWrite = writeIndex.load(ordering: .acquiring)
 
-        let n = min(count, currentWrite &- currentRead)
-        if n == 0 { return 0 }
-        
-        var idx = currentRead
-        for i in 0..<n {
-            dst.advanced(by: i).pointee = buffer[idx & capacityMask]
-            idx &+= 1
+        let available = currentWrite &- currentRead
+        if available == 0 { return 0 }
+
+        let n = min(count, available)
+        let start = currentRead & capacityMask
+        let bufferCount = buffer.count
+        let firstChunk = min(n, bufferCount &- start)
+
+        buffer.withUnsafeBufferPointer { ptr in
+            let base = ptr.baseAddress!
+            // Corrected: use update(from:count:) instead of deprecated assign(from:count:)
+            dst.update(from: base + start, count: firstChunk)
+            if n > firstChunk {
+                dst.advanced(by: firstChunk)
+                    .update(from: base, count: n - firstChunk)
+            }
         }
-        
+
         // "Release" the newly-free space so the producer thread can "acquire" it
-        readIndex.store(idx, ordering: .releasing)
+        readIndex.store(currentRead &+ n, ordering: .releasing)
         return n
     }
 }

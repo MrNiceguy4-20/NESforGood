@@ -176,6 +176,8 @@ class EmulatorCore {
             // Retune APU filters to match output sample rate
             apu?.setOutputSampleRate(Float(audioSampleRate))
 
+            var lastSample: Float = 0.0 // Hold last sample to mask buffer underrun clicks
+
             let format = AVAudioFormat(
                 commonFormat: .pcmFormatFloat32,
                 sampleRate: audioSampleRate,
@@ -190,9 +192,13 @@ class EmulatorCore {
                 if let buf = abl.first, let mData = buf.mData {
                     let dst = mData.bindMemory(to: Float.self, capacity: frames)
                     let read = self.audioRB.pop(into: dst, count: frames)
+                    if read > 0 { // Update last sample if any were read
+                        lastSample = dst.advanced(by: read - 1).pointee
+                    }
                     if read < frames {
                         let rem = frames - read
-                        (dst + read).initialize(repeating: 0, count: rem)
+                        // Fill underrun with the last valid sample instead of zero
+                        (dst + read).initialize(repeating: lastSample, count: rem)
                     }
                     abl[0].mDataByteSize = UInt32(frames * MemoryLayout<Float>.size)
                 }

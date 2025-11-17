@@ -76,6 +76,8 @@ final class Coordinator: NSObject, MTKViewDelegate {
     private var vb: MTLBuffer?
     private var ub: MTLBuffer?
     private var srcTexture: MTLTexture?
+    private var cachedDrawableSize: CGSize = .zero
+    private var cachedScaleSnapshot: ScaleMode = .integer
 
     var scaleMode: ScaleMode = .integer
     var shaderMode: ShaderMode = .none
@@ -147,41 +149,8 @@ final class Coordinator: NSObject, MTKViewDelegate {
         }
         guard let source = srcTexture else { return }
 
-        let baseW: CGFloat = 256, baseH: CGFloat = 240
-        let dw = view.drawableSize.width, dh = view.drawableSize.height
-        var W: CGFloat, H: CGFloat
-        if scaleMode == .integer {
-            let sx = floor(dw / baseW), sy = floor(dh / baseH)
-            let scale = max(1, Int(min(sx, sy)))
-            W = CGFloat(scale) * baseW
-            H = CGFloat(scale) * baseH
-        } else {
-            let aspect = baseW / baseH
-            if dw / dh > aspect { H = dh; W = H * aspect } else { W = dw; H = W / aspect }
-        }
-        let x0 = (dw - W) * 0.5, y0 = (dh - H) * 0.5
-        let x1 = x0 + W, y1 = y0 + H
-
-        let ndc = { (x: CGFloat, y: CGFloat) -> SIMD2<Float> in
-            SIMD2<Float>(Float((x / dw) * 2.0 - 1.0),
-                         Float((y / dh) * 2.0 - 1.0))
-        }
-
-        let verts: [Float] = [
-            ndc(x0, y0).x, ndc(x0, y0).y, 0.0, 1.0,
-            ndc(x1, y0).x, ndc(x1, y0).y, 1.0, 1.0,
-            ndc(x0, y1).x, ndc(x0, y1).y, 0.0, 0.0,
-            ndc(x1, y0).x, ndc(x1, y0).y, 1.0, 1.0,
-            ndc(x1, y1).x, ndc(x1, y1).y, 1.0, 0.0,
-            ndc(x0, y1).x, ndc(x0, y1).y, 0.0, 0.0
-        ]
-
-        if vb == nil || vb!.length < MemoryLayout<Float>.size * verts.count {
-            vb = device.makeBuffer(bytes: verts, length: MemoryLayout<Float>.size * verts.count, options: .storageModeShared)
-        } else {
-            let ptr = vb!.contents().bindMemory(to: Float.self, capacity: verts.count)
-            for i in 0..<verts.count { ptr[i] = verts[i] }
-        }
+        updateVertexBufferIfNeeded(for: view)
+        guard let vb = vb else { return }
 
         if let ub = ub {
             let U = ub.contents().bindMemory(to: Uniforms.self, capacity: 1)
@@ -203,5 +172,76 @@ final class Coordinator: NSObject, MTKViewDelegate {
         enc.endEncoding()
         cmd.present(drawable)
         cmd.commit()
+    }
+
+    private func updateVertexBufferIfNeeded(for view: MTKView) {
+        guard let device = self.device ?? view.device else { return }
+        let drawableSize = view.drawableSize
+        guard drawableSize.width > 0 && drawableSize.height > 0 else { return }
+
+        // Only update if the size or the scaling mode has changed
+        if drawableSize == cachedDrawableSize && cachedScaleSnapshot == scaleMode {
+            return
+        }
+
+        cachedDrawableSize = drawableSize
+        cachedScaleSnapshot = scaleMode
+
+        let baseW: CGFloat = 256
+        let baseH: CGFloat = 240
+        let dw = drawableSize.width
+        let dh = drawableSize.height
+
+        var W: CGFloat
+        var H: CGFloat
+
+        if scaleMode == .integer {
+            let sx = floor(dw / baseW)
+            let sy = floor(dh / baseH)
+            let scale = max(1, Int(min(sx, sy)))
+            W = CGFloat(scale) * baseW
+            H = CGFloat(scale) * baseH
+        } else {
+            let aspect = baseW / baseH
+            if dw / dh > aspect {
+                H = dh
+                W = H * aspect
+            } else {
+                W = dw
+                H = W / aspect
+            }
+        }
+
+        let x0 = (dw - W) * 0.5
+        let y0 = (dh - H) * 0.5
+        let x1 = x0 + W
+        let y1 = y0 + H
+
+        let ndc = { (x: CGFloat, y: CGFloat) -> SIMD2<Float> in
+            SIMD2<Float>(
+                Float((x / dw) * 2.0 - 1.0),
+                Float((y / dh) * 2.0 - 1.0)
+            )
+        }
+
+        let verts: [Float] = [
+            ndc(x0, y0).x, ndc(x0, y0).y, 0.0, 1.0,
+            ndc(x1, y0).x, ndc(x1, y0).y, 1.0, 1.0,
+            ndc(x0, y1).x, ndc(x0, y1).y, 0.0, 0.0,
+            ndc(x1, y0).x, ndc(x1, y0).y, 1.0, 1.0,
+            ndc(x1, y1).x, ndc(x1, y1).y, 1.0, 0.0,
+            ndc(x0, y1).x, ndc(x0, y1).y, 0.0, 0.0
+        ]
+
+        let dataLength = MemoryLayout<Float>.size * verts.count
+        if vb == nil || vb!.length < dataLength {
+            vb = device.makeBuffer(bytes: verts, length: dataLength, options: .storageModeShared)
+        } else if let vb = vb {
+            let ptr = vb.contents().bindMemory(to: Float.self, capacity: verts.count)
+            // Corrected: use update(from:count:) instead of deprecated assign(from:count:)
+            verts.withUnsafeBufferPointer { buf in
+                ptr.update(from: buf.baseAddress!, count: buf.count)
+            }
+        }
     }
 }
