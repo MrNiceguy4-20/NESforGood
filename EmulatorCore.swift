@@ -62,7 +62,8 @@ class EmulatorCore {
 
     private var smoothedAudioSample: Float = 0.0
     private var maxSampleDelta: Float = 0.08
-
+    private var scratchAudioBuffer = [Float](repeating: 0, count: 2048)
+    
     // Warmup gate
     private var emulationActive: Bool = false
 
@@ -219,8 +220,10 @@ class EmulatorCore {
             let abl = UnsafeMutableAudioBufferListPointer(audioBufferList)
             if let buf = abl.first, let mData = buf.mData {
                 let dst = mData.bindMemory(to: Float.self, capacity: frames)
-                for i in 0..<frames {
-                    dst[i] = self.renderSample()
+                let produced = self.renderSamples(into: dst, frames: frames)
+                if produced < frames {
+                    self.renderSilence(into: dst.advanced(by: produced), frames: frames - produced)
+                    
                 }
                 abl[0].mDataByteSize = UInt32(frames * MemoryLayout<Float>.size)
             }
@@ -288,28 +291,53 @@ class EmulatorCore {
 
     // MARK: - Audio-Driven Emulation
 
-    private func renderSample() -> Float {
+    private func renderSamples(into dst: UnsafeMutablePointer<Float>, frames: Int) -> Int {
         guard isRunning, emulationActive,
               let cpu = self.cpu,
               let ppu = self.ppu,
               let apu = self.apu,
               let bus = self.bus else {
-            return smoothAndLimit(0.0)
+            return 0
         }
 
-        cpuCycleAccumulator += cpuCyclesPerSample
-        var cyclesToRun = Int(cpuCycleAccumulator)
-        cpuCycleAccumulator -= Double(cyclesToRun)
+        var remaining = frames
+        var written = 0
+        var accumulator = cpuCycleAccumulator
 
-        while cyclesToRun > 0 {
-            stepOneCPUCycle(cpu: cpu, ppu: ppu, apu: apu, bus: bus)
-            cyclesToRun -= 1
+        while remaining > 0 {
+            let chunk = min(remaining, scratchAudioBuffer.count)
+
+            for i in 0..<chunk {
+                accumulator += cpuCyclesPerSample
+                var cyclesToRun = Int(accumulator)
+                accumulator -= Double(cyclesToRun)
+
+                while cyclesToRun > 0 {
+                    stepOneCPUCycle(cpu: cpu, ppu: ppu, apu: apu, bus: bus)
+                    cyclesToRun -= 1
+                }
+
+                scratchAudioBuffer[i] = smoothAndLimit(apu.outputSample())
+            }
+
+            scratchAudioBuffer.withUnsafeBufferPointer { ptr in
+                dst.advanced(by: written).update(from: ptr.baseAddress!, count: chunk)
+            }
+
+            written += chunk
+            remaining -= chunk
         }
 
-        let raw = apu.outputSample()
-        return smoothAndLimit(raw)
+        cpuCycleAccumulator = accumulator
+
+            return written
     }
 
+    private func renderSilence(into dst: UnsafeMutablePointer<Float>, frames: Int) {
+        for i in 0..<frames {
+            dst[i] = smoothAndLimit(0.0)
+        }
+    }
     private func stepOneCPUCycle(cpu: CPU, ppu: PPU, apu: APU, bus: Bus) {
         apu.tick()
         ppu.tick(); ppu.tick(); ppu.tick()
