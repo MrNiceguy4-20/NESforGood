@@ -21,7 +21,7 @@ final class Controller {
         setupGameController()
     }
 
-    private func setupKeyboardMonitor() {
+    @inline(__always) private func setupKeyboardMonitor() {
         NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
             guard let self = self else { return event }
             let isPressed = (event.type == .keyDown)
@@ -40,7 +40,7 @@ final class Controller {
         }
     }
 
-    private func setupGameController() {
+    @inline(__always) private func setupGameController() {
         NotificationCenter.default.addObserver(
             forName: .GCControllerDidConnect,
             object: nil,
@@ -56,7 +56,7 @@ final class Controller {
         }
     }
 
-    private func configureGamepad(_ controller: GCController) {
+    @inline(__always) private func configureGamepad(_ controller: GCController) {
         guard let gamepad = controller.extendedGamepad else { return }
 
         gamepad.dpad.valueChangedHandler = { [weak self] _, x, y in
@@ -91,14 +91,14 @@ final class Controller {
         // -----------------------
     }
 
-    func write(value: UInt8) {
+    @inline(__always) func write(value: UInt8) {
         strobe = (value & 1) != 0
         if strobe {
             reloadShiftRegister()
         }
     }
 
-    func read() -> UInt8 {
+    @inline(__always) func read() -> UInt8 {
         if strobe {
             reloadShiftRegister()
         }
@@ -108,7 +108,7 @@ final class Controller {
         return bit
     }
 
-    private func reloadShiftRegister() {
+    @inline(__always) private func reloadShiftRegister() {
         var bits: UInt8 = 0
         for (i, button) in Button.allCases.enumerated() {
             if buttonStates[button] == true {

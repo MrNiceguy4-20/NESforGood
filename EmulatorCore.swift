@@ -97,7 +97,7 @@ class EmulatorCore {
 
     // MARK: - ROM Management
 
-    func unload() {
+    @inline(__always) func unload() {
         cartridge?.saveBatteryRAM()
         cpu = nil
         ppu = nil
@@ -112,7 +112,7 @@ class EmulatorCore {
         resetAudioSmoothers()
     }
 
-    func loadROM(data: Data) throws {
+    @inline(__always) func loadROM(data: Data) throws {
         if isRunning { stop() }
         cartridge?.saveBatteryRAM()
         unload()
@@ -132,27 +132,27 @@ class EmulatorCore {
 
     // MARK: - Public Configuration Helpers
 
-    func setVSync(_ enabled: Bool) {
+    @inline(__always) func setVSync(_ enabled: Bool) {
         self.vsyncEnabledHint = enabled
     }
 
-    func setFrameLimit(_ fps: Int) {
+    @inline(__always) func setFrameLimit(_ fps: Int) {
         self.desiredFPS = max(0, fps)
         updateFrameDurationTicks()
     }
 
-    func setTurboEnabled(_ enabled: Bool) {
+    @inline(__always) func setTurboEnabled(_ enabled: Bool) {
         turboEnabled = enabled
         resetFrameSync()
     }
 
-    func setAudioLatency(_ level: AudioLatency) {
+    @inline(__always) func setAudioLatency(_ level: AudioLatency) {
         audioLatencyLevel = level
     }
 
     // MARK: - Start / Stop / Reset
 
-    func start() {
+    @inline(__always) func start() {
         guard !isRunning, cartridge != nil else { return }
         isRunning = true
         emulationActive = false
@@ -170,7 +170,7 @@ class EmulatorCore {
         }
     }
 
-    func stop() {
+    @inline(__always) func stop() {
         guard isRunning else { return }
         isRunning = false
         emulationActive = false
@@ -180,7 +180,7 @@ class EmulatorCore {
         resetAudioSmoothers()
     }
 
-    func reset() {
+    @inline(__always) func reset() {
         cartridge?.saveBatteryRAM()
         cpu?.reset()
         ppu?.reset()
@@ -198,7 +198,7 @@ class EmulatorCore {
 
     // MARK: - Audio Engine Setup
 
-    private func configureAudioEngineIfNeeded() {
+    @inline(__always) private func configureAudioEngineIfNeeded() {
         if engine != nil { return }
 
         let engine = AVAudioEngine()
@@ -241,7 +241,7 @@ class EmulatorCore {
         self.sourceNode = src
     }
 
-    private func buildAudioChain(engine: AVAudioEngine, source: AVAudioSourceNode, format: AVAudioFormat) {
+    @inline(__always) private func buildAudioChain(engine: AVAudioEngine, source: AVAudioSourceNode, format: AVAudioFormat) {
         let eq = AVAudioUnitEQ(numberOfBands: 1)
         if let band = eq.bands.first {
             band.filterType = .lowPass
@@ -273,7 +273,7 @@ class EmulatorCore {
         self.limiterNode = limiter
     }
 
-    private func startAudioEngine() {
+    @inline(__always) private func startAudioEngine() {
         guard let engine = engine else { return }
         do {
             try engine.start()
@@ -284,7 +284,7 @@ class EmulatorCore {
 
     // MARK: - Warmup
 
-    private func warmUpChipsForStableStart() {
+    @inline(__always) private func warmUpChipsForStableStart() {
         guard let cpu = cpu, let ppu = ppu, let apu = apu, let bus = bus else { return }
 
         cpuCycleAccumulator = 0.0
@@ -296,7 +296,7 @@ class EmulatorCore {
 
     // MARK: - Audio-Driven Emulation
 
-    private func renderSamples(into dst: UnsafeMutablePointer<Float>, frames: Int) -> Int {
+    @inline(__always) private func renderSamples(into dst: UnsafeMutablePointer<Float>, frames: Int) -> Int {
         guard isRunning, emulationActive,
               let cpu = self.cpu,
               let ppu = self.ppu,
@@ -324,13 +324,13 @@ class EmulatorCore {
         return frames
     }
 
-    private func renderSilence(into dst: UnsafeMutablePointer<Float>, frames: Int) {
+    @inline(__always) private func renderSilence(into dst: UnsafeMutablePointer<Float>, frames: Int) {
         for i in 0..<frames {
             dst[i] = smoothAndLimit(0.0)
         }
     }
 
-    private func stepOneCPUCycle(cpu: CPU, ppu: PPU, apu: APU, bus: Bus) {
+    @inline(__always) private func stepOneCPUCycle(cpu: CPU, ppu: PPU, apu: APU, bus: Bus) {
         apu.tick()
         ppu.tick(); ppu.tick(); ppu.tick()
 
@@ -384,14 +384,14 @@ class EmulatorCore {
 
     // MARK: - Audio Helpers
 
-    private func updateAudioResampleStep() {
+    @inline(__always) private func updateAudioResampleStep() {
         cpuCyclesPerSample = cpuHz / audioSampleRate
         maxSampleDelta = Float(0.28 * (44_100.0 / max(8_000.0, audioSampleRate)))
         dcBlockerCoeff = Float(exp(-2.0 * .pi * 12.0 / max(8_000.0, audioSampleRate)))
         resetAudioSmoothers()
     }
 
-    private func smoothAndLimit(_ rawSample: Float) -> Float {
+    @inline(__always) private func smoothAndLimit(_ rawSample: Float) -> Float {
         let highPassed = rawSample - dcBlockerPrevInput + dcBlockerCoeff * dcBlockerPrevOutput
         dcBlockerPrevInput = rawSample
         dcBlockerPrevOutput = highPassed
@@ -410,15 +410,15 @@ class EmulatorCore {
         return limited
     }
 
-    private func resetAudioSmoothers() {
+    @inline(__always) private func resetAudioSmoothers() {
         smoothedAudioSample = 0.0
         dcBlockerPrevInput = 0.0
         dcBlockerPrevOutput = 0.0
     }
 
-    func runOneFrame() { }
+    @inline(__always) func runOneFrame() { }
 
-    func currentFrameCGImage() -> CGImage? {
+    @inline(__always) func currentFrameCGImage() -> CGImage? {
         if let img = screenImage {
             return img.cgImage()
         }
@@ -429,7 +429,7 @@ class EmulatorCore {
 // MARK: - Timing Helpers
 
 extension EmulatorCore {
-    private func updateFrameDurationTicks() {
+    @inline(__always) private func updateFrameDurationTicks() {
         guard desiredFPS > 0 else {
             frameDurationTicks = 0
             resetFrameSync()
@@ -440,11 +440,11 @@ extension EmulatorCore {
         resetFrameSync()
     }
 
-    private func resetFrameSync() {
+    @inline(__always) private func resetFrameSync() {
         nextFrameTick = mach_absolute_time()
     }
 
-    fileprivate func nanosToAbsoluteTime(_ nanos: UInt64) -> UInt64 {
+    @inline(__always) fileprivate func nanosToAbsoluteTime(_ nanos: UInt64) -> UInt64 {
         if timebaseInfo.denom == 0 || timebaseInfo.numer == 0 { return nanos }
         return nanos &* UInt64(timebaseInfo.denom) / UInt64(timebaseInfo.numer)
     }
@@ -453,7 +453,7 @@ extension EmulatorCore {
 // MARK: - Image → CGImage
 
 extension Image {
-    func cgImage() -> CGImage? {
+    @inline(__always) func cgImage() -> CGImage? {
         #if os(macOS)
         let mirror = Mirror(reflecting: self)
         for child in mirror.children {

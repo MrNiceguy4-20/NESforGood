@@ -26,7 +26,7 @@ class TriangleChannel {
         linearCounter = 0
     }
 
-    func write(reg: UInt8, value: UInt8) {
+    @inline(__always) func write(reg: UInt8, value: UInt8) {
         switch reg {
         case 0:
             lengthHalt = (value & 0x80) != 0

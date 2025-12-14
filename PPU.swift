@@ -660,7 +660,7 @@ final class PPU {
         fbPtrBack[scanline * fbW + c] = pixel
     }
 
-    func getFrameImage() -> Image {
+    @inline(__always) func getFrameImage() -> Image {
         os_unfair_lock_lock(&fbLock)
         dataProvider = CGDataProvider(
             dataInfo: nil,
@@ -687,7 +687,7 @@ final class PPU {
         return Image(decorative: cgimg, scale: 1.0)
     }
 
-    func makeTexture(device: MTLDevice) -> MTLTexture? {
+    @inline(__always) func makeTexture(device: MTLDevice) -> MTLTexture? {
         let desc = MTLTextureDescriptor()
         desc.pixelFormat = .bgra8Unorm
         desc.width = max(1, fbW)
@@ -703,7 +703,7 @@ final class PPU {
         return texture
     }
 
-    func copyFrame(to texture: MTLTexture) {
+    @inline(__always) func copyFrame(to texture: MTLTexture) {
         os_unfair_lock_lock(&fbLock)
         let ptr = fbPtrFront
         os_unfair_lock_unlock(&fbLock)
@@ -723,14 +723,14 @@ final class PPU {
         }
     }
 
-    func clearFrame() {
+    @inline(__always) func clearFrame() {
         os_unfair_lock_lock(&fbLock)
         fbPtrFront.initialize(repeating: 0xFF000000, count: fbW * fbH)
         fbPtrBack.initialize(repeating: 0xFF000000, count: fbW * fbH)
         os_unfair_lock_unlock(&fbLock)
     }
 
-    private func cachePalette() {
+    @inline(__always) private func cachePalette() {
         for i in 0..<0x20 {
             var pa = UInt16(i)
             if pa & 0x0013 == 0x10 { pa &= 0x000F }
@@ -738,7 +738,7 @@ final class PPU {
         }
     }
     
-    func reset() {
+    @inline(__always) func reset() {
         cycle = 0; scanline = -1; frame = 0; frameReady = false; nmiPending = false
         status = 0; ctrl = 0; mask = 0; oamAddr = 0; w = false; v = 0; t = 0; x = 0
         clearFrame(); cachePalette()

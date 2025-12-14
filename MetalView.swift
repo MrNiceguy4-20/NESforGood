@@ -24,7 +24,7 @@ struct MetalView: NSViewRepresentable {
     var colorTemp: Float
     var curvature: Float
 
-    func makeNSView(context: Context) -> MTKView {
+    @inline(__always) func makeNSView(context: Context) -> MTKView {
         let view = MTKView()
         guard let device = MTLCreateSystemDefaultDevice() else { fatalError("Metal not supported") }
         view.device = device
@@ -42,7 +42,7 @@ struct MetalView: NSViewRepresentable {
         return view
     }
 
-    func updateNSView(_ nsView: MTKView, context: Context) {
+    @inline(__always) func updateNSView(_ nsView: MTKView, context: Context) {
         context.coordinator.scaleMode = scaleMode
         context.coordinator.shaderMode = shaderMode
         context.coordinator.gamma = gamma
@@ -53,7 +53,7 @@ struct MetalView: NSViewRepresentable {
         nsView.preferredFramesPerSecond = vsyncEnabled ? frameLimit : max(30, frameLimit)
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    @inline(__always) func makeCoordinator() -> Coordinator { Coordinator() }
 }
 
 struct Uniforms {
@@ -66,7 +66,7 @@ struct Uniforms {
 }
 
 final class Coordinator: NSObject, MTKViewDelegate {
-    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+    @inline(__always) func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     private var emulator: EmulatorCore!
     private(set) var device: MTLDevice!
@@ -91,7 +91,7 @@ final class Coordinator: NSObject, MTKViewDelegate {
     private var lastTime: CFTimeInterval = CACurrentMediaTime()
     private var lastCartridgeID: ObjectIdentifier? = nil
 
-    func configure(view: MTKView, emulator: EmulatorCore, scaleMode: ScaleMode, shaderMode: ShaderMode) {
+    @inline(__always) func configure(view: MTKView, emulator: EmulatorCore, scaleMode: ScaleMode, shaderMode: ShaderMode) {
         self.emulator = emulator
         self.scaleMode = scaleMode
         self.shaderMode = shaderMode
@@ -119,7 +119,7 @@ final class Coordinator: NSObject, MTKViewDelegate {
         view.delegate = self
     }
 
-    func draw(in view: MTKView) {
+    @inline(__always) func draw(in view: MTKView) {
         let currentCartridgeID = emulator.cartridge.map { ObjectIdentifier($0) }
 
         if lastCartridgeID != currentCartridgeID {
@@ -174,7 +174,7 @@ final class Coordinator: NSObject, MTKViewDelegate {
         cmd.commit()
     }
 
-    private func updateVertexBufferIfNeeded(for view: MTKView) {
+    @inline(__always) private func updateVertexBufferIfNeeded(for view: MTKView) {
         guard let device = self.device ?? view.device else { return }
         let drawableSize = view.drawableSize
         guard drawableSize.width > 0 && drawableSize.height > 0 else { return }

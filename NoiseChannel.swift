@@ -28,7 +28,7 @@ class NoiseChannel {
         decayLevel = 0
     }
     
-    func write(reg: UInt8, value: UInt8) {
+    @inline(__always) func write(reg: UInt8, value: UInt8) {
         switch reg {
         case 0:
             lengthHalt = (value & 0x20) != 0
@@ -44,7 +44,7 @@ class NoiseChannel {
         }
     }
     
-    func clockTimer() {
+    @inline(__always) func clockTimer() {
         if timer == 0 {
             timer = NoiseChannel.periodTable[Int(periodIndex)]
             let feedback = (shiftRegister & 1) ^ ((shiftRegister >> (mode ? 6 : 1)) & 1)
@@ -54,7 +54,7 @@ class NoiseChannel {
         }
     }
     
-    func clockEnvelope() {
+    @inline(__always) func clockEnvelope() {
         if envelopeStart {
             decayLevel = 15
             envelopeDivider = volume
@@ -68,7 +68,7 @@ class NoiseChannel {
         }
     }
     
-    func clockLength() {
+    @inline(__always) func clockLength() {
         if !lengthHalt && lengthCounter > 0 { lengthCounter &-= 1 }
     }
     

@@ -23,11 +23,11 @@ final class DMCChannel {
         190, 160, 142, 128, 106,  84,  72,  54
     ]
     
-    func reset() {
+    @inline(__always) func reset() {
         irqFlag = false
     }
     
-    func write(reg: UInt8, value: UInt8) {
+    @inline(__always) func write(reg: UInt8, value: UInt8) {
         switch reg {
         case 0:
             irqEnable = (value & 0x80) != 0
@@ -45,7 +45,7 @@ final class DMCChannel {
         }
     }
     
-    func start() {
+    @inline(__always) func start() {
         currentAddress = sampleAddress
         bytesRemaining = sampleLength
         shiftRegister  = 0
@@ -55,7 +55,7 @@ final class DMCChannel {
         irqFlag        = false
     }
     
-    private func fetchNextByte() {
+    @inline(__always) private func fetchNextByte() {
         guard let bus = apu?.bus else { return }
         let byte = bus.cpuRead(address: currentAddress)
         apu?.dmcStallCycles &+= 4  // or 3 on PAL, but 4 is safe

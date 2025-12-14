@@ -25,7 +25,7 @@ final class CPU {
         reset()
     }
 
-    func reset() {
+    @inline(__always) func reset() {
         PC = readWord(address: 0xFFFC)
         SP = 0xFD
         P  = 0x24
@@ -231,7 +231,7 @@ final class CPU {
 
     // MARK: - Interrupts & Control Flow
 
-    func nmi() {
+    @inline(__always) func nmi() {
         pushWord(PC)
         var f = P
         f &= ~Flag.B.rawValue
@@ -242,7 +242,7 @@ final class CPU {
         PC = readWord(address: 0xFFFA)
     }
 
-    func irq() {
+    @inline(__always) func irq() {
         if getFlag(.I) { return }
         pushWord(PC)
         var f = P
@@ -254,7 +254,7 @@ final class CPU {
         PC = readWord(address: 0xFFFE)
     }
 
-    private func brk() {
+    @inline(__always) private func brk() {
         PC &+= 1
         pushWord(PC)
         let f = (P | Flag.B.rawValue | Flag.U.rawValue)
@@ -264,7 +264,7 @@ final class CPU {
         PC = readWord(address: 0xFFFE)
     }
 
-    private func rti() {
+    @inline(__always) private func rti() {
         var f = pop()
         f |= Flag.U.rawValue
         f &= ~Flag.B.rawValue
@@ -283,12 +283,10 @@ final class CPU {
     // MARK: - CPU Step
 
     @discardableResult
-    func step() -> Int {
+    @inline(__always) func step() -> Int {
 
-        if let core = bus.core, core.dmaActive {
-            if core.dmaCyclesLeft > 0 {
+        if let core = bus.core, core.dmaActive, core.dmaCyclesLeft > 0 {
                 return 1 // DMA steals the cycle, but we don't increment CPU.cycles
-            }
         }
 
         if stallIRQThisInstruction {
@@ -310,7 +308,7 @@ final class CPU {
     // ---
     // --- OPTIMIZATION: This function builds the 256-entry opcode table ---
     // ---
-    private func buildOpcodeTable() -> [() -> Int] {
+    @inline(__always) private func buildOpcodeTable() -> [() -> Int] {
         var table: [() -> Int] = Array(repeating: { self.opKIL() }, count: 256)
 
         // --- Load/Store Operations ---

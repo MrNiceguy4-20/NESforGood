@@ -212,7 +212,7 @@ struct ContentView: View {
         emulator.cartridge != nil && !emulator.isRunning
     }
 
-    private func loadROM() {
+    @inline(__always) private func loadROM() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "nes") ?? .data]
         panel.canChooseFiles = true

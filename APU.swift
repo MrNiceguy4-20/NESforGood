@@ -61,7 +61,7 @@ final class APU {
         configureFilters()
     }
 
-    private func configureFilters() {
+    @inline(__always) private func configureFilters() {
         let fs = max(8_000.0, outputSampleRate)
 
         let fcLP: Float = 12_000.0
@@ -73,14 +73,14 @@ final class APU {
         hpAlpha = rc / (rc + dt)
     }
 
-    func setOutputSampleRate(_ rate: Float) {
+    @inline(__always) func setOutputSampleRate(_ rate: Float) {
         let clamped = max(8_000.0, rate)
         guard abs(clamped - outputSampleRate) > 0.1 else { return }
         outputSampleRate = clamped
         configureFilters()
     }
 
-    func reset() {
+    @inline(__always) func reset() {
         pulse1.reset()
         pulse2.reset()
         triangle.reset()

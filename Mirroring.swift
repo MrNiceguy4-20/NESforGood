@@ -102,13 +102,13 @@ final class Cartridge {
         }
     }
 
-    func saveBatteryRAM() {
+    @inline(__always) func saveBatteryRAM() {
         guard hasBattery, let ram = prgRAM, let url = saveURL else { return }
         let buffer = UnsafeBufferPointer(start: ram.data, count: ram.size)
         try? Data(buffer).write(to: url, options: [.atomic])
     }
 
-    private static func quickHash(_ bytes: [UInt8]) -> String {
+    @inline(__always) private static func quickHash(_ bytes: [UInt8]) -> String {
         var h: UInt64 = 0xcbf29ce484222325
         for b in bytes {
             h ^= UInt64(b)
@@ -119,25 +119,25 @@ final class Cartridge {
 }
 
 protocol Mapper: AnyObject {
-    func cpuRead(address: UInt16) -> UInt8
-    func cpuWrite(address: UInt16, value: UInt8)
-    func ppuRead(address: UInt16) -> UInt8
-    func ppuWrite(address: UInt16, value: UInt8)
-    func ppuA12Observe(addr: UInt16, ppuDot: UInt64)
-    func mapperIRQAsserted() -> Bool
-    func mapperIRQClear()
+    @inline(__always) func cpuRead(address: UInt16) -> UInt8
+    @inline(__always) func cpuWrite(address: UInt16, value: UInt8)
+    @inline(__always) func ppuRead(address: UInt16) -> UInt8
+    @inline(__always) func ppuWrite(address: UInt16, value: UInt8)
+    @inline(__always) func ppuA12Observe(addr: UInt16, ppuDot: UInt64)
+    @inline(__always) func mapperIRQAsserted() -> Bool
+    @inline(__always) func mapperIRQClear()
     // ---
     // --- FIX: Add missing required method to the protocol ---
     // ---
-    func clockScanlineCounter()
+    @inline(__always) func clockScanlineCounter()
 }
 
 extension Mapper {
-    func ppuA12Observe(addr: UInt16, ppuDot: UInt64) {}
-    func mapperIRQAsserted() -> Bool { return false }
-    func mapperIRQClear() {}
+    @inline(__always) func ppuA12Observe(addr: UInt16, ppuDot: UInt64) {}
+    @inline(__always) func mapperIRQAsserted() -> Bool { return false }
+    @inline(__always) func mapperIRQClear() {}
     // ---
     // --- FIX: Provide default implementation for non-MMC3 mappers ---
     // ---
-    func clockScanlineCounter() {}
+    @inline(__always) func clockScanlineCounter() {}
 }
