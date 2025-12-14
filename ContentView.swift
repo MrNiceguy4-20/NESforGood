@@ -5,7 +5,6 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @State private var emulator = EmulatorCore()
-    @State private var lastFrameTime: Date = Date()
     @State private var fps: Double = 0
     @State private var romName: String = "No ROM loaded"
     @State private var lastSerial: UInt64 = 0
@@ -70,7 +69,6 @@ struct ContentView: View {
 
                 Button(action: {
                     emulator.start()
-                    lastFrameTime = Date()
                 }) {
                     Label("Start", systemImage: "play.circle")
                 }
@@ -118,11 +116,6 @@ struct ContentView: View {
                 Toggle("CRT Mode", isOn: $crtEnabled)
                     .toggleStyle(.switch)
                     .tint(.accentColor)
-                    .padding(.leading, 8)
-                    .toggleStyle(.switch)
-                    .controlSize(.regular)
-                    .tint(.accentColor)
-                    .padding(.leading, 8)
 
                 Picker("FPS", selection: $frameLimit) {
                     Text("30").tag(30)
