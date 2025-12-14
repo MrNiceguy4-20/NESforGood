@@ -311,8 +311,9 @@ class EmulatorCore {
     }
 
     private func stepOneCPUCycle(cpu: CPU, ppu: PPU, apu: APU, bus: Bus) {
-        ppu.tick(); ppu.tick(); ppu.tick()
         apu.tick()
+        ppu.tick(); ppu.tick(); ppu.tick()
+        
 
         if dmaActive {
             if dmaCyclesLeft > 0 {
