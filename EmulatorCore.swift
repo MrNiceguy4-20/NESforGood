@@ -62,8 +62,12 @@ class EmulatorCore {
 
     private var smoothedAudioSample: Float = 0.0
     private var maxSampleDelta: Float = 0.08
-    private var scratchAudioBuffer = [Float](repeating: 0, count: 2048)
-    
+
+    // DC blocker (high-pass)
+    private var dcBlockerPrevInput: Float = 0.0
+    private var dcBlockerPrevOutput: Float = 0.0
+    private var dcBlockerCoeff: Float = 0.995
+
     // Warmup gate
     private var emulationActive: Bool = false
 
@@ -105,6 +109,7 @@ class EmulatorCore {
         cpuCycleCounter = 0
         mmc3Mapper = nil
         emulationActive = false
+        resetAudioSmoothers()
     }
 
     func loadROM(data: Data) throws {
@@ -172,7 +177,7 @@ class EmulatorCore {
 
         engine?.stop()
         cartridge?.saveBatteryRAM()
-        smoothedAudioSample = 0.0
+        resetAudioSmoothers()
     }
 
     func reset() {
@@ -188,6 +193,7 @@ class EmulatorCore {
         dmaCyclesLeft = 0
         cpuCycleCounter = 0
         emulationActive = false
+        resetAudioSmoothers()
     }
 
     // MARK: - Audio Engine Setup
@@ -223,7 +229,6 @@ class EmulatorCore {
                 let produced = self.renderSamples(into: dst, frames: frames)
                 if produced < frames {
                     self.renderSilence(into: dst.advanced(by: produced), frames: frames - produced)
-                    
                 }
                 abl[0].mDataByteSize = UInt32(frames * MemoryLayout<Float>.size)
             }
@@ -300,37 +305,23 @@ class EmulatorCore {
             return 0
         }
 
-        var remaining = frames
-        var written = 0
         var accumulator = cpuCycleAccumulator
 
-        while remaining > 0 {
-            let chunk = min(remaining, scratchAudioBuffer.count)
+        for i in 0..<frames {
+            accumulator += cpuCyclesPerSample
+            var cyclesToRun = Int(accumulator)
+            accumulator -= Double(cyclesToRun)
 
-            for i in 0..<chunk {
-                accumulator += cpuCyclesPerSample
-                var cyclesToRun = Int(accumulator)
-                accumulator -= Double(cyclesToRun)
-
-                while cyclesToRun > 0 {
-                    stepOneCPUCycle(cpu: cpu, ppu: ppu, apu: apu, bus: bus)
-                    cyclesToRun -= 1
-                }
-
-                scratchAudioBuffer[i] = smoothAndLimit(apu.outputSample())
+            while cyclesToRun > 0 {
+                stepOneCPUCycle(cpu: cpu, ppu: ppu, apu: apu, bus: bus)
+                cyclesToRun -= 1
             }
 
-            scratchAudioBuffer.withUnsafeBufferPointer { ptr in
-                dst.advanced(by: written).update(from: ptr.baseAddress!, count: chunk)
-            }
-
-            written += chunk
-            remaining -= chunk
+            dst[i] = smoothAndLimit(apu.outputSample())
         }
 
         cpuCycleAccumulator = accumulator
-
-            return written
+        return frames
     }
 
     private func renderSilence(into dst: UnsafeMutablePointer<Float>, frames: Int) {
@@ -338,10 +329,10 @@ class EmulatorCore {
             dst[i] = smoothAndLimit(0.0)
         }
     }
+
     private func stepOneCPUCycle(cpu: CPU, ppu: PPU, apu: APU, bus: Bus) {
         apu.tick()
         ppu.tick(); ppu.tick(); ppu.tick()
-        
 
         if dmaActive {
             if dmaCyclesLeft > 0 {
@@ -395,11 +386,17 @@ class EmulatorCore {
 
     private func updateAudioResampleStep() {
         cpuCyclesPerSample = cpuHz / audioSampleRate
-        maxSampleDelta = Float(0.20 * (44_100.0 / max(8_000.0, audioSampleRate)))
+        maxSampleDelta = Float(0.28 * (44_100.0 / max(8_000.0, audioSampleRate)))
+        dcBlockerCoeff = Float(exp(-2.0 * .pi * 12.0 / max(8_000.0, audioSampleRate)))
+        resetAudioSmoothers()
     }
 
     private func smoothAndLimit(_ rawSample: Float) -> Float {
-        var clamped = max(-1.25, min(1.25, rawSample))
+        let highPassed = rawSample - dcBlockerPrevInput + dcBlockerCoeff * dcBlockerPrevOutput
+        dcBlockerPrevInput = rawSample
+        dcBlockerPrevOutput = highPassed
+
+        var clamped = max(-1.25, min(1.25, highPassed))
 
         let delta = clamped - smoothedAudioSample
         if delta > maxSampleDelta {
@@ -411,6 +408,12 @@ class EmulatorCore {
 
         let limited = Float(tanh(Double(clamped) * 1.15)) * 0.92
         return limited
+    }
+
+    private func resetAudioSmoothers() {
+        smoothedAudioSample = 0.0
+        dcBlockerPrevInput = 0.0
+        dcBlockerPrevOutput = 0.0
     }
 
     func runOneFrame() { }
@@ -462,3 +465,4 @@ extension Image {
         return nil
     }
 }
+
