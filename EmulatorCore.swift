@@ -267,6 +267,7 @@ class EmulatorCore {
         engine.connect(source, to: eq, format: format)
         engine.connect(eq, to: limiter, format: format)
         engine.connect(limiter, to: engine.mainMixerNode, format: format)
+        engine.connect(engine.mainMixerNode, to: engine.outputNode, format: engine.outputNode.outputFormat(forBus: 0))
         engine.mainMixerNode.outputVolume = 0.8
 
         self.eqNode = eq
@@ -276,6 +277,8 @@ class EmulatorCore {
     @inline(__always) private func startAudioEngine() {
         guard let engine = engine else { return }
         do {
+            
+            engine.prepare()
             try engine.start()
         } catch {
             print("AVAudioEngine start error: \(error)")
