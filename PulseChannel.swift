@@ -102,38 +102,38 @@ class PulseChannel {
 
     @inline(__always)
     func clockSweep() {
-        let targetInt = calculateTarget()
-        let muted = isMuted()
-
-        if sweepDivider == 0 && sweepEnable && sweepShift > 0 && !muted {
-            period = UInt16(max(0, min(0x7FF, targetInt)))
-        }
-
         if sweepDivider == 0 || sweepReload {
             sweepDivider = sweepPeriod
             sweepReload = false
         } else {
             sweepDivider &-= 1
         }
+
+        if sweepDivider == 0 && sweepEnable && sweepShift > 0 && period >= 8 {
+            let target = calculateTarget()
+            if target <= 0x7FF {
+                period = UInt16(target)
+            }
+        }
     }
 
     @inline(__always)
     private func calculateTarget() -> Int {
-        let shifted = Int(period) >> Int(sweepShift)
-        var change = shifted
+        let delta = Int(period >> sweepShift)
         if sweepNegate {
-            change = -shifted
-            if channel == 1 { change &-= 1 }
+            var negated = -delta
+            if channel == 1 {
+                negated &-= 1
+            }
+            return Int(period) + negated
+        } else {
+            return Int(period) + delta
         }
-        var targetInt = Int(period) &+ change
-        if targetInt < 0 { targetInt = 0 }
-        return targetInt
     }
 
     @inline(__always)
-    func isMuted() -> Bool {
-        let targetInt = calculateTarget()
-        return period < 8 || targetInt > 0x7FF
+    private func isMuted() -> Bool {
+        return period < 8 || calculateTarget() > 0x7FF
     }
 
     @inline(__always)

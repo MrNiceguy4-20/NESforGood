@@ -182,17 +182,28 @@ final class APU {
     private func apply4017Write(_ value: UInt8) {
         frameMode5Step  = (value & 0x80) != 0
         frameIRQInhibit = (value & 0x40) != 0
-        if frameIRQInhibit { frameIRQFlag = false }
 
-        frameCycle = 0
-        halfRateToggle = false
+        if frameIRQInhibit {
+            frameIRQFlag = false
+        }
 
+        // Critical fix: ONLY reset the frame sequencer in 4-step mode
+        if !frameMode5Step {
+            frameCycle = 0
+            halfRateToggle = false
+        }
+        // In 5-step mode, we do NOT reset frameCycle here!
+        // It continues from wherever it was.
+
+        // In 5-step mode, the write itself triggers an immediate quarter + half frame
         if frameMode5Step {
             clockQuarterFrame()
             clockHalfFrame()
+            // Do NOT touch frameCycle or halfRateToggle — they keep their current state
         }
 
-        irqPending = ((!frameIRQInhibit && frameIRQFlag) || dmc.irqFlag)
+        // Update IRQ line
+        irqPending = (!frameIRQInhibit && frameIRQFlag) || dmc.irqFlag
     }
 
     @inline(__always)
@@ -296,7 +307,8 @@ final class APU {
         hpX = lpOut
         hpY = hpOut
 
-        var out = hpOut * 0.9
+        // Lower overall gain to avoid saturating the post-mix limiter/soft clip
+        var out = hpOut * 0.5
         if out > 1.0 { out = 1.0 }
         if out < -1.0 { out = -1.0 }
         return out

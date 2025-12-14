@@ -66,7 +66,7 @@ class TriangleChannel {
     }
 
     var output: UInt8 {
-        if !enabled || linearCounter == 0 || lengthCounter == 0 || period < 2 { return 0 }
+        if !enabled || linearCounter == 0 || lengthCounter == 0 || period < 3 { return 0 }
         return TriangleChannel.waveTable[Int(sequencer)]
     }
 }

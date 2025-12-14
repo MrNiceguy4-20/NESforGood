@@ -19,7 +19,8 @@ final class DMCChannel {
     var silence: Bool = true
     
     static let rateTable: [UInt16] = [
-        428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54
+        428, 380, 340, 320, 286, 254, 226, 214,
+        190, 160, 142, 128, 106,  84,  72,  54
     ]
     
     func reset() {
@@ -57,12 +58,16 @@ final class DMCChannel {
     private func fetchNextByte() {
         guard let bus = apu?.bus else { return }
         let byte = bus.cpuRead(address: currentAddress)
-        apu?.dmcStallCycles &+= 4
+        apu?.dmcStallCycles &+= 4  // or 3 on PAL, but 4 is safe
+        
         shiftRegister = byte
-        silence = false
+        silence = false                     // This is essential
+        bitCount = 8                        // Already set above, but safe
+        
         currentAddress &+= 1
         if currentAddress == 0 { currentAddress = 0x8000 }
-        if bytesRemaining > 0 { bytesRemaining &-= 1 }
+        
+        bytesRemaining &-= 1
         if bytesRemaining == 0 {
             if loop {
                 start()
@@ -72,31 +77,40 @@ final class DMCChannel {
         }
     }
     
+    @inline(__always)
     func clockTimer() {
-        if timer == 0 {
-            timer = DMCChannel.rateTable[Int(rateIndex)]
-
-            if !silence {
-                if (shiftRegister & 1) != 0 {
-                    if output <= 125 { output &+= 2 }
-                } else {
-                    if output >= 2 { output &-= 2 }
-                }
-            }
-            shiftRegister >>= 1
-            bitCount &-= 1
-            
-            if bitCount == 0 {
-                bitCount = 8
-                if bytesRemaining > 0 {
-                    fetchNextByte()
-                } else {
-                    silence = true
-                    if irqEnable { irqFlag = true }
-                }
-            }
-        } else {
+        if timer > 0 {
             timer &-= 1
+            return
+        }
+        
+        // Timer expired → clock the DPCM output unit
+        timer = DMCChannel.rateTable[Int(rateIndex)]
+        
+        // Process current bit (if we have one)
+        if !silence {
+            if (shiftRegister & 1) != 0 {
+                if output <= 125 { output &+= 2 }
+            } else {
+                if output >= 2 { output &-= 2 }
+            }
+        }
+        
+        // Always shift — even if silence, so bitCount stays in sync
+        shiftRegister >>= 1
+        bitCount &-= 1
+        
+        // When we've shifted out all 8 bits...
+        if bitCount == 0 {
+            bitCount = 8
+            
+            if bytesRemaining > 0 {
+                fetchNextByte()        // Loads new byte → silence = false inside fetchNextByte()
+            } else {
+                // No more data → go silent immediately
+                // Do NOT feed a phantom 0 bit
+                silence = true
+            }
         }
     }
 }
